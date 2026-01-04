@@ -1,0 +1,40 @@
+# Binaries
+hhunter
+hhunter.exe
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.backup
+
+# Build artifacts
+build/
+dist/
+*.test
+*.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Output files
+*.json
+output/
+
+# Logs
+*.log
+
+# Go workspace
+go.work
+go.sum
+
+# OS
+Thumbs.db
+
+# GitHub sync script (contains token - DO NOT COMMIT)
+github_sync.sh
