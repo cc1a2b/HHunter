@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cc1a2b/hhunter/engine"
-	"github.com/cc1a2b/hhunter/headers"
+	"github.com/cc1a2b/HHunter/engine"
+	"github.com/cc1a2b/HHunter/headers"
 )
 
 var version = "v0.1"
@@ -637,7 +637,7 @@ func printBanner() {
 
 func getVersionStatus() string {
 	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get("https://api.github.com/repos/cc1a2b/hhunter/releases/latest")
+	resp, err := client.Get("https://api.github.com/repos/cc1a2b/HHunter/releases/latest")
 	if err != nil {
 		return "Unknown"
 	}
@@ -1016,17 +1016,17 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 func updateTool() {
 	fmt.Printf("\033[0;34m[INFO]\033[0m Checking for updates...\n")
 
-	resp, err := http.Get("https://api.github.com/repos/cc1a2b/hhunter/releases/latest")
+	resp, err := http.Get("https://api.github.com/repos/cc1a2b/HHunter/releases/latest")
 	if err != nil {
 		fmt.Printf("\033[0;31m[ERROR]\033[0m Failed to check for updates: %v\n", err)
-		fmt.Printf("\033[0;33m[INFO]\033[0m You can manually update from: https://github.com/cc1a2b/hhunter/releases\n")
+		fmt.Printf("\033[0;33m[INFO]\033[0m You can manually update from: https://github.com/cc1a2b/HHunter/releases\n")
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
 		fmt.Printf("\033[0;31m[ERROR]\033[0m Failed to fetch release information\n")
-		fmt.Printf("\033[0;33m[INFO]\033[0m You can manually update from: https://github.com/cc1a2b/hhunter/releases\n")
+		fmt.Printf("\033[0;33m[INFO]\033[0m You can manually update from: https://github.com/cc1a2b/HHunter/releases\n")
 		return
 	}
 
@@ -1078,7 +1078,7 @@ func updateTool() {
 
 	if downloadURL == "" {
 		fmt.Printf("\033[0;31m[ERROR]\033[0m No suitable binary found for your platform (%s_%s)\n", goos, goarch)
-		fmt.Printf("\033[0;33m[INFO]\033[0m Please download manually from: https://github.com/cc1a2b/hhunter/releases/tag/%s\n", release.TagName)
+		fmt.Printf("\033[0;33m[INFO]\033[0m Please download manually from: https://github.com/cc1a2b/HHunter/releases/tag/%s\n", release.TagName)
 		return
 	}
 

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/cc1a2b/hhunter/engine"
+	"github.com/cc1a2b/HHunter/engine"
 )
 
 type PrivilegeDetector struct{}

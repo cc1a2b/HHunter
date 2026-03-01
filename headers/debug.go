@@ -1,6 +1,6 @@
 package headers
 
-import "github.com/cc1a2b/hhunter/engine"
+import "github.com/cc1a2b/HHunter/engine"
 
 func GetDebugMutations() []engine.Mutation {
 	return []engine.Mutation{

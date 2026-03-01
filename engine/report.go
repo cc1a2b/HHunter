@@ -432,7 +432,7 @@ func buildSARIF(result *ScanResult, targetURL string) *sarifReport {
 					Driver: sarifDriver{
 						Name:           "HHunter",
 						Version:        "4.0",
-						InformationURI: "https://github.com/cc1a2b/hhunter",
+						InformationURI: "https://github.com/cc1a2b/HHunter",
 						Rules:          ruleList,
 					},
 				},

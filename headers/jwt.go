@@ -3,7 +3,7 @@ package headers
 import (
 	"encoding/base64"
 
-	"github.com/cc1a2b/hhunter/engine"
+	"github.com/cc1a2b/HHunter/engine"
 )
 
 func GetJWTMutations() []engine.Mutation {

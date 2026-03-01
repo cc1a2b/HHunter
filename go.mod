@@ -1,3 +1,3 @@
-module github.com/cc1a2b/hhunter
+module github.com/cc1a2b/HHunter
 
 go 1.23

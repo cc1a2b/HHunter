@@ -6,8 +6,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/cc1a2b/hhunter/engine"
-	"github.com/cc1a2b/hhunter/headers"
+	"github.com/cc1a2b/HHunter/engine"
+	"github.com/cc1a2b/HHunter/headers"
 )
 
 func main() {
