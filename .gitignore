@@ -1,6 +1,6 @@
-# Binaries
-hhunter
-hhunter.exe
+# Binaries (root only, not cmd/hhunter/)
+/hhunter
+/hhunter.exe
 *.exe
 *.exe~
 *.dll
