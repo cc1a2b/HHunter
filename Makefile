@@ -3,6 +3,7 @@
 BINARY_NAME=hhunter
 BUILD_DIR=build
 GO=go
+CMD=./cmd/hhunter
 
 help:
 	@echo "HHunter v0.1 - HTTP Header Security Testing Engine"
@@ -18,7 +19,7 @@ help:
 build:
 	@echo "Building HHunter..."
 	@mkdir -p $(BUILD_DIR)
-	$(GO) build -o $(BUILD_DIR)/$(BINARY_NAME) .
+	$(GO) build -o $(BUILD_DIR)/$(BINARY_NAME) $(CMD)
 	@echo "Build complete: $(BUILD_DIR)/$(BINARY_NAME)"
 
 clean:
@@ -39,17 +40,17 @@ test:
 
 run: build
 	@echo "Running HHunter example scan..."
-	./$(BUILD_DIR)/$(BINARY_NAME) scan -u https://httpbin.org/headers --auth --proxy
+	./$(BUILD_DIR)/$(BINARY_NAME) -u https://httpbin.org/headers --auth --proxy
 
 # Platform-specific builds
 build-linux:
-	GOOS=linux GOARCH=amd64 $(GO) build -o $(BUILD_DIR)/$(BINARY_NAME)-linux .
+	GOOS=linux GOARCH=amd64 $(GO) build -o $(BUILD_DIR)/$(BINARY_NAME)-linux $(CMD)
 
 build-windows:
-	GOOS=windows GOARCH=amd64 $(GO) build -o $(BUILD_DIR)/$(BINARY_NAME).exe .
+	GOOS=windows GOARCH=amd64 $(GO) build -o $(BUILD_DIR)/$(BINARY_NAME).exe $(CMD)
 
 build-darwin:
-	GOOS=darwin GOARCH=amd64 $(GO) build -o $(BUILD_DIR)/$(BINARY_NAME)-darwin .
+	GOOS=darwin GOARCH=amd64 $(GO) build -o $(BUILD_DIR)/$(BINARY_NAME)-darwin $(CMD)
 
 build-all: build-linux build-windows build-darwin
 	@echo "All platform builds complete"

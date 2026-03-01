@@ -183,7 +183,7 @@ HHunter includes a built-in OOB callback server that confirms blind vulnerabilit
 ### Go Install (Recommended)
 ```bash
 # Install HHunter
-go install -v github.com/cc1a2b/HHunter@latest
+go install -v github.com/cc1a2b/HHunter/cmd/hhunter@latest
 
 # Verify installation
 hhunter --help
@@ -193,19 +193,19 @@ hhunter --help
 ```bash
 git clone https://github.com/cc1a2b/HHunter.git
 cd HHunter
-go build -o hhunter .
+go build -o hhunter ./cmd/hhunter
 ```
 
 ### Platform-Specific Builds
 ```bash
 # Linux
-GOOS=linux GOARCH=amd64 go build -o hhunter-linux .
+GOOS=linux GOARCH=amd64 go build -o hhunter-linux ./cmd/hhunter
 
 # Windows
-GOOS=windows GOARCH=amd64 go build -o hhunter.exe .
+GOOS=windows GOARCH=amd64 go build -o hhunter.exe ./cmd/hhunter
 
 # macOS
-GOOS=darwin GOARCH=amd64 go build -o hhunter-darwin .
+GOOS=darwin GOARCH=amd64 go build -o hhunter-darwin ./cmd/hhunter
 ```
 
 ### System Requirements
@@ -499,7 +499,7 @@ We welcome contributions! Here's how you can help:
 git clone https://github.com/cc1a2b/HHunter.git
 cd HHunter
 go mod tidy
-go build -o hhunter .
+go build -o hhunter ./cmd/hhunter
 ```
 
 ### Project Structure
