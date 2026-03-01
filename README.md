@@ -4,8 +4,8 @@
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/Go-1.23+-00ADD8?style=flat&logo=go)](https://golang.org)
-[![Release](https://img.shields.io/github/release/cc1a2b/HHunter.svg)](https://github.com/cc1a2b/HHunter/releases)
-[![GitHub stars](https://img.shields.io/github/stars/cc1a2b/HHunter)](https://github.com/cc1a2b/HHunter/stargazers)
+[![Release](https://img.shields.io/github/v/release/cc1a2b/HHunter?style=flat&color=orange)](https://github.com/cc1a2b/HHunter/releases)
+[![GitHub stars](https://img.shields.io/github/stars/cc1a2b/HHunter?style=flat&color=yellow)](https://github.com/cc1a2b/HHunter/stargazers)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)](https://github.com/cc1a2b/HHunter/releases)
 
 **Advanced HTTP Header Vulnerability Scanner**
