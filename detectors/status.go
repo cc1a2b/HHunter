@@ -1,6 +1,6 @@
 package detectors
 
-import "github.com/cc1a2b/jshunter/engine"
+import "github.com/cc1a2b/hhunter/engine"
 
 type StatusDetector struct{}
 

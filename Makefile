@@ -5,7 +5,7 @@ BUILD_DIR=build
 GO=go
 
 help:
-	@echo "HHunter - Advanced Header Testing Engine"
+	@echo "HHunter v0.1 - HTTP Header Security Testing Engine"
 	@echo ""
 	@echo "Available targets:"
 	@echo "  build    - Build the binary"

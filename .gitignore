@@ -38,3 +38,4 @@ Thumbs.db
 
 # GitHub sync script (contains token - DO NOT COMMIT)
 github_sync.sh
+.claude

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/cc1a2b/jshunter/engine"
+	"github.com/cc1a2b/hhunter/engine"
 )
 
 type BodyDetector struct{}

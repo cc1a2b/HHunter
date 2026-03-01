@@ -1,297 +1,562 @@
-# HHunter - Advanced Header Testing Engine
+# HHunter
 
-HHunter is a powerful Go-based security testing tool designed to detect logic flaws, trust abuse, WAF bypass, authentication confusion, and other vulnerabilities through intelligent HTTP header mutation and analysis.
+<div align="center">
+
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Go Version](https://img.shields.io/badge/Go-1.23+-00ADD8?style=flat&logo=go)](https://golang.org)
+[![Release](https://img.shields.io/github/release/cc1a2b/HHunter.svg)](https://github.com/cc1a2b/HHunter/releases)
+[![GitHub stars](https://img.shields.io/github/stars/cc1a2b/HHunter)](https://github.com/cc1a2b/HHunter/stargazers)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)](https://github.com/cc1a2b/HHunter/releases)
+
+**Advanced HTTP Header Vulnerability Scanner**
+
+*1100+ mutations across 22 attack categories with OOB detection, adaptive scanning, and evidence-based reporting for security professionals*
+
+</div>
+
+## About
+
+**HHunter** is an advanced HTTP header security testing engine built for penetration testers and bug bounty hunters. It discovers real vulnerabilities through intelligent header mutation and differential response analysis — not just information gathering. With 1100+ attack mutations, out-of-band blind vulnerability detection, technology-adaptive scanning, and chained multi-header attacks, HHunter finds what other tools miss.
+
+<div align="center">
+
+<!-- <img alt="HHunter Demo Screenshot" src="https://github.com/user-attachments/assets/placeholder" width="100%"> -->
+
+*HHunter v0.1 — Finding real vulnerabilities through header mutation analysis*
+
+</div>
+
+---
+
+## Table of Contents
+
+- [About](#about)
+- [Features](#features)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Usage Examples](#usage-examples)
+- [Command Reference](#command-reference)
+- [Advanced Usage](#advanced-usage)
+- [Detection Categories](#detection-categories)
+- [Contributing](#contributing)
+- [License](#license)
+- [Support](#support)
+
+---
 
 ## Features
 
-- **Intelligent Header Mutation**: Tests multiple categories of header-based attacks
-- **Differential Analysis**: Compares baseline vs mutated responses to detect anomalies
-- **Privilege Detection**: Identifies privilege escalation and authentication bypass
-- **WAF Evasion**: Built-in techniques to bypass Web Application Firewalls
-- **Concurrent Scanning**: Fast, multi-threaded execution with rate limiting
-- **JSON Output**: Export findings in machine-readable format
+### Core Capabilities
+- **Authentication Bypass**: JWT none/kid/jku attacks, token manipulation, role injection, cloud identity spoofing (198 mutations)
+- **SSRF via Headers**: IMDSv2 bypass, Azure managed identity tokens, GCP metadata, K8s API/secrets, 50+ internal services (198 mutations)
+- **Injection Engine**: SSTI per engine (Jinja2/Twig/Thymeleaf/Freemarker/Velocity/Pebble), Log4Shell 20+ WAF bypasses, blind SQLi, OGNL/EL (148 mutations)
+- **CORS Exploitation**: Origin reflection, null origin, subdomain bypass, method/header expansion detection
+- **Cache Poisoning**: Host header injection, X-Forwarded-Host, cache key manipulation, CDN bypass
+- **OOB Detection**: Built-in callback server for blind SSRF, blind XSS, blind Log4Shell, blind RCE confirmation
+- **Chained Attacks**: Multi-header combo mutations across 7 strategic pairing categories
 
-## Header Categories
+### Intelligent Detection Engine
+> **Evidence-based analysis with zero false positive design**
 
-### 1. Authentication & Identity (`--auth`)
-- Authorization bypass with null/undefined tokens
-- API key manipulation
-- Role-based access control bypass
-- CSRF token bypass
+- **Differential Analysis**: Statistical baseline profiling (multi-sample) with semantic response comparison
+- **Response Similarity**: LCS-based body comparison, structural HTML/JSON matching, header set analysis — not just hash comparison
+- **Technology Adaptive**: Fingerprints server/language/framework/WAF, then prioritizes relevant mutations (PHP payloads for PHP targets, etc.)
+- **Context-Aware Reflection**: Distinguishes dangerous reflection contexts (JS, HTML attr, unescaped) from safe ones (JSON strings, CDN headers)
+- **Finding Deduplication**: Groups findings by root cause (header family + impact type), keeps highest-confidence instance, merges alternate triggers
 
-### 2. Proxy & Trust Headers (`--proxy`)
-- X-Forwarded-For IP spoofing
-- Internal network access via trusted headers
-- Cloud metadata access (169.254.169.254)
-- Protocol confusion attacks
+### Professional HTTP & Networking Suite
+<details>
+<summary><strong>Enterprise-Grade Network Configuration</strong></summary>
 
-### 3. CORS Testing (`--cors`)
-- Origin validation bypass
-- Null origin exploitation
-- Subdomain takeover detection
+**Request Configuration:**
+- **Custom Headers** (`-H`): Repeatable custom HTTP headers for authenticated testing
+- **Request Body** (`-d`): POST/PUT body data with Content-Type control (`-ct`)
+- **Raw Request Import** (`--raw`): Import requests directly from Burp Suite
+- **Cookie Support** (`-b`): Session cookies for accessing protected endpoints
+- **HTTP Methods** (`-m`): Test any HTTP method (GET, POST, PUT, DELETE, PATCH, etc.)
 
-### 4. Cache Poisoning (`--cache`)
-- Host header injection
-- Cache deception attacks
-- Protocol downgrade via cache
+**Performance & Control:**
+- **Concurrency** (`-w`): Adjustable worker threads (default: 30)
+- **Rate Limiting** (`-r`): Request delay in milliseconds to avoid detection
+- **Timeouts** (`-t`): Configurable request timeout (default: 30s)
+- **Redirect Control** (`-fr`): Follow or block HTTP redirects
 
-### 5. Method Override (`--override`)
-- HTTP method override (PUT, DELETE, PATCH)
-- URL rewrite attacks
-- Path traversal via override headers
+**Proxy & Stealth:**
+- **Proxy Support** (`--proxy-url`): Full Burp Suite and proxy tool integration (HTTP/HTTPS/SOCKS)
+- **WAF Evasion** (`--waf-evasion`): Header case randomization and evasion techniques
+- **Stealth Mode** (`--stealth`): Slower, more evasive scanning approach
 
-### 6. Cloud/CDN Headers (`--cloud`)
-- Cloudflare bypass (CF-Connecting-IP)
-- AWS, Azure, GCP header injection
-- CDN trust chain abuse
+> **Example**: `hhunter -u https://target.com/api --auth --proxy --proxy-url http://127.0.0.1:8080 -H "Authorization: Bearer token"`
 
-### 7. Debug & Legacy (`--debug`)
-- Debug mode activation
-- Stack trace exposure
-- Feature flag manipulation
+</details>
+
+### Out-of-Band (OOB) Detection
+<details>
+<summary><strong>Blind Vulnerability Confirmation via Callback Server</strong></summary>
+
+HHunter includes a built-in OOB callback server that confirms blind vulnerabilities with high confidence:
+
+- **Blind SSRF**: HTTP/HTTPS/DNS-based callbacks for every SSRF mutation
+- **Blind Log4Shell**: LDAP/LDAPS/DNS/RMI OOB + obfuscated bypass variants + env variable exfiltration
+- **Blind XXE**: SYSTEM entity and parameter entity OOB callbacks
+- **Blind SSTI**: Per-engine OOB (Java curl, Jinja2 popen, Twig system)
+- **Blind RCE**: curl/wget/nslookup/PowerShell callbacks + whoami exfiltration
+- **Blind XSS**: Persistent XSS detection via img src and script src OOB
+
+**How it works:**
+1. Start with `--oob --oob-url http://your-vps:8888`
+2. HHunter injects unique interaction IDs into each payload
+3. When a target processes a blind payload, it calls back to your server
+4. HHunter correlates the callback to the exact mutation → confirmed finding (0.95 confidence)
+
+> **Example**: `hhunter -u https://target.com --full --oob --oob-url http://your-vps:8888 --oob-wait 30`
+
+</details>
+
+### Attack Categories (22 Total)
+<details>
+<summary><strong>Comprehensive Header-Based Attack Vectors</strong></summary>
+
+**Core Categories:**
+| Flag | Category | Description |
+|------|----------|-------------|
+| `--auth` | Authentication | JWT bypass, token manipulation, role injection, IDOR, CSRF bypass |
+| `--proxy` | Proxy Trust | IP spoofing, X-Forwarded-For, internal network access |
+| `--cors` | CORS | Origin reflection, null origin, subdomain bypass |
+| `--cache` | Cache Poisoning | Host injection, cache key manipulation, CDN bypass |
+| `--override` | Method Override | HTTP verb tampering, URL rewrite, path override |
+| `--cloud` | Cloud/CDN | AWS/Azure/GCP/K8s header injection |
+| `--debug` | Debug Exposure | Debug mode activation, feature flags, stack traces |
+
+**Advanced Categories:**
+| Flag | Category | Description |
+|------|----------|-------------|
+| `--injection` | Injection | XSS, SSTI (9 engines), Log4Shell (20+ bypasses), SQLi (5 DBs), OGNL, NoSQL, LDAP |
+| `--ssrf` | SSRF | Cloud metadata (IMDSv2, Azure MI, GCP), K8s, Docker, 50+ internal services |
+| `--smuggling` | Smuggling | CL-TE, TE-CL, trailer injection |
+| `--hopbyhop` | Hop-by-Hop | Header stripping attacks |
+| `--ratelimit` | Rate Limit | Rate limit bypass techniques |
+| `--security` | Security Headers | CSP, HSTS, X-Frame-Options manipulation |
+| `--websocket` | WebSocket | WebSocket/gRPC/GraphQL upgrade probes |
+| `--jwt` | JWT | alg:none, kid traversal, jku/x5u poisoning, weak secrets |
+| `--crlf` | CRLF | Response splitting, header injection |
+| `--cookie` | Cookie | Fixation, tossing, overflow attacks |
+| `--content-type` | Content-Type | MIME confusion, WAF bypass |
+| `--redirect` | Redirect | Open redirect via header manipulation |
+| `--protocol` | Protocol | h2c smuggling, HTTP/2 upgrade |
+| `--encoding` | Encoding | Charset attacks, WAF bypass, Range abuse |
+| `--gateway` | Gateway | Kong, Envoy, Traefik, API gateway bypass |
+
+> **Full scan**: `hhunter -u https://target.com --full` runs all 22 categories + audit + recon + verify + chain
+
+</details>
+
+### Professional Reporting & Export
+<details>
+<summary><strong>Enterprise-Grade Output & CI/CD Integration</strong></summary>
+
+**Output Formats:**
+- **Console Display**: Color-coded findings with severity badges, confidence scores, evidence details, and remediation
+- **JSON Export** (`-o`): Structured output with full scan stats, findings, evidence, and audit results
+- **HTML Report** (`--report`): Self-contained dark-themed report with expandable findings, stats grid, and severity breakdown
+- **SARIF Report** (`--sarif`): SARIF 2.1.0 JSON for GitHub Code Scanning, Azure DevOps, and CI/CD pipelines
+
+**Matchers & Filters:**
+- **Match Status** (`-ms`): Only process specific status codes (e.g., `200,302`)
+- **Filter Status** (`-fs`): Exclude status codes (e.g., `404,500`)
+- **Match/Filter Size**: Process or exclude responses by byte size
+
+**Result Management:**
+- **Differential Mode** (`--diff-only`): Show only significant response differences
+- **Quiet Mode** (`-q`): Suppress banner for scripting and automation
+- **Auto-Verify** (`--verify`): Automatically re-test high-confidence findings for confirmation
+- **Exit Code**: Returns exit code 1 when Critical/High findings detected (CI/CD friendly)
+
+> **Example**: `hhunter -l urls.txt --full --report report.html --sarif results.sarif -o findings.json -q`
+
+</details>
+
+---
 
 ## Installation
 
+### Go Install (Recommended)
 ```bash
-git clone https://github.com/yourusername/hhunter
-cd hhunter
-go build -o hhunter
+# Install HHunter
+go install -v github.com/cc1a2b/HHunter@latest
+
+# Verify installation
+hhunter --help
 ```
 
-## Usage
+### Build from Source
+```bash
+git clone https://github.com/cc1a2b/HHunter.git
+cd HHunter
+go build -o hhunter .
+```
 
-### Basic Scan
+### Platform-Specific Builds
+```bash
+# Linux
+GOOS=linux GOARCH=amd64 go build -o hhunter-linux .
+
+# Windows
+GOOS=windows GOARCH=amd64 go build -o hhunter.exe .
+
+# macOS
+GOOS=darwin GOARCH=amd64 go build -o hhunter-darwin .
+```
+
+### System Requirements
+- **Go 1.23+** (for building from source)
+- **Linux, macOS, or Windows** (64-bit architecture)
+- **Network connectivity** for remote testing
+- **VPS** (optional, for OOB callback server)
+
+---
+
+## Quick Start
+
+### Basic Testing
+```bash
+# Quick auth bypass test
+hhunter -u https://api.target.com/admin --auth
+
+# Test proxy trust + CORS
+hhunter -u https://api.target.com/internal --proxy --cors
+
+# Full scan — all 22 categories
+hhunter -u https://target.com/api --full
+```
+
+### Complete Security Assessment
+```bash
+# Full scan with HTML report
+hhunter -u https://target.com/api --full --report report.html -o findings.json
+
+# Full scan with blind vulnerability detection
+hhunter -u https://target.com/api --full --oob --oob-url http://your-vps:8888
+
+# Multi-target scan from file
+hhunter -l urls.txt --full --report report.html
+
+# Pipeline mode from other tools
+cat urls.txt | hhunter --auth --proxy --injection --diff-only
+```
+
+---
+
+## Usage Examples
 
 ```bash
-hhunter scan -u https://api.target.com/profile
+# Authentication bypass testing
+hhunter -u https://api.target.com/admin --auth --jwt
+
+# SSRF hunting with cloud metadata focus
+hhunter -u https://target.com --ssrf --cloud
+
+# Injection testing (SSTI, Log4Shell, SQLi, XSS)
+hhunter -u https://target.com --injection
+
+# CORS misconfiguration detection
+hhunter -u https://api.target.com/data --cors
+
+# Cache poisoning assessment
+hhunter -u https://target.com --cache --diff-only
+
+# Full offensive scan with OOB detection
+hhunter -u https://target.com/api --full --oob --oob-url http://vps:8888 -o results.json
+
+# POST endpoint with body data
+hhunter -u https://api.target.com/login -m POST -d '{"user":"admin"}' --auth --injection
+
+# Import raw request from Burp
+hhunter --raw request.txt --auth --proxy --verify
+
+# Stealth scan through Burp Suite with WAF evasion
+hhunter -u https://target.com --full --stealth --waf-evasion --proxy-url http://127.0.0.1:8080 -w 5
+
+# Filter out noise — only 200 and 302 responses
+hhunter -u https://target.com --full -ms 200,302
+
+# Multi-target with SARIF output for CI/CD
+hhunter -l urls.txt --full --sarif results.sarif -q
+
+# Privilege escalation hunting
+hhunter -u https://api.target.com --auth --priv-check --diff-only
+
+# Custom authenticated testing
+hhunter -u https://api.target.com/admin --auth -H "Authorization: Bearer eyJ..." -b "session=abc123"
 ```
 
-### Target Specific Categories
+---
 
+## Command Reference
+
+Get the complete help anytime with `hhunter --help`
+
+```
+Usage:
+  hhunter -u <URL> [options]
+  hhunter -l <file> [options]
+  cat urls.txt | hhunter [options]
+
+Target:
+  -u, --url URL                 Target URL
+  -l, --list FILE               File containing URLs (one per line)
+  -m, --method METHOD           HTTP method (default: GET)
+  -d, --data DATA               Request body data
+  -ct CONTENT-TYPE              Content-Type for request body
+  --raw FILE                    Raw HTTP request file (Burp format)
+  stdin                         Pipe URLs from other tools
+
+Core Attack Categories:
+  --auth                        Authentication & authorization bypass
+  --proxy                       Proxy trust abuse (X-Forwarded-For, etc)
+  --cors                        CORS misconfigurations
+  --cache                       Cache poisoning & deception
+  --override                    HTTP method & URL override
+  --cloud                       Cloud/CDN/K8s header injection
+  --debug                       Debug mode & feature flag exposure
+
+Advanced Attack Categories:
+  --smuggling                   HTTP request smuggling (CL-TE, TE-CL)
+  --injection                   Header injection (XSS, SSTI, Log4Shell, SQLi)
+  --ssrf                        SSRF via headers (metadata, internal services)
+  --hopbyhop                    Hop-by-hop header stripping attacks
+  --ratelimit                   Rate limit bypass techniques
+  --security                    Security header manipulation (CSP, HSTS)
+  --websocket                   WebSocket/gRPC/GraphQL probes
+  --jwt                         JWT attacks (alg:none, confusion, injection)
+  --crlf                        CRLF injection / HTTP response splitting
+  --cookie                      Cookie manipulation (fixation, tossing, overflow)
+  --content-type                Content-Type abuse (MIME confusion, WAF bypass)
+  --redirect                    Open redirect via header manipulation
+  --protocol                    Protocol upgrade (h2c smuggling, HTTP/2)
+  --encoding                    Encoding/charset attacks (WAF bypass, Range)
+  --gateway                     API gateway/routing bypass (Kong, Envoy, etc)
+
+Scan Control:
+  --full                        Run ALL categories + audit + recon + verify + chain
+  --audit                       Passive security audit (WAF, tech, headers)
+  --recon                       Reconnaissance (reflection, methods, host injection)
+  --verify                      Auto-verify high-confidence findings
+  --chain                       Chain multiple header mutations for combo attacks
+  --diff-only                   Only show significant differences
+  --priv-check                  Privilege escalation detection
+  --waf-evasion                 WAF bypass techniques (header case randomization)
+  --stealth                     Stealth mode (slower, more evasive)
+
+OOB (Out-of-Band) Detection:
+  --oob                         Enable OOB callback server for blind vulns
+  --oob-addr ADDR               OOB listen address (default: 0.0.0.0:8888)
+  --oob-url URL                 External OOB URL (e.g., http://your-vps:8888)
+  --oob-wait SEC                Wait time for OOB callbacks (default: 10)
+
+HTTP Configuration:
+  -w, --workers INT             Concurrent workers (default: 30)
+  -r, --rate MS                 Rate limit delay in milliseconds
+  -t, --timeout SEC             Request timeout in seconds (default: 30)
+  -H, --header "Key: Value"     Custom header (repeatable)
+  -b, --cookies "key=val; ..."  Cookie string
+  --proxy-url URL               HTTP proxy (e.g., http://127.0.0.1:8080)
+  -fr, --follow-redirect        Follow HTTP redirects
+
+Matchers/Filters:
+  -ms, --match-status CODES     Only process these status codes (e.g., 200,302)
+  -fs, --filter-status CODES    Exclude these status codes (e.g., 404,500)
+  --match-size BYTES            Only process responses of this size
+  --filter-size BYTES           Exclude responses of this size
+
+Output:
+  -o, --output FILE.json        Output results to JSON file
+  --report FILE.html            Generate HTML report
+  --sarif FILE.sarif            Generate SARIF report (CI/CD)
+  -q, --quiet                   Suppress banner
+  --update, --up                Update to latest version
+  -h, --help                    Show this help
+```
+
+---
+
+## Advanced Usage
+
+### Professional Penetration Testing
 ```bash
-# Test authentication headers only
-hhunter scan -u https://api.target.com/admin --auth
+# Complete header security assessment with reports
+hhunter -u https://target.com/api --full --report audit.html -o findings.json
 
-# Test proxy and cache headers
-hhunter scan -u https://api.target.com/api --proxy --cache
+# OOB blind vulnerability hunting on VPS
+hhunter -u https://target.com --full --oob --oob-url http://your-vps:8888 --oob-wait 30 -o oob_findings.json
 
-# All categories
-hhunter scan -u https://target.com --auth --proxy --cors --cache --override --cloud --debug
+# Stealth reconnaissance with WAF evasion
+hhunter -u https://target.com --full --waf-evasion --stealth -r 1000 -w 5 -q
+
+# Burp Suite integration workflow
+hhunter --raw burp_request.txt --auth --proxy --injection --oob --proxy-url http://127.0.0.1:8080
+
+# POST endpoint body testing
+hhunter -u https://api.target.com/login -m POST -d '{"username":"admin","password":"test"}' -ct application/json --auth --injection
 ```
 
-### Advanced Options
-
+### Bug Bounty Hunting
 ```bash
-# With WAF evasion and stealth mode
-hhunter scan -u https://target.com/api \
-  --auth \
-  --proxy \
-  --waf-evasion \
-  --stealth \
-  -o results.json
+# Quick recon + auth bypass on API endpoints
+cat api_endpoints.txt | hhunter --auth --proxy --cors --jwt --diff-only -o bounty.json
 
-# Through proxy with custom workers
-hhunter scan -u https://target.com \
-  --auth \
-  --proxy-url http://127.0.0.1:8080 \
-  --workers 50 \
-  --rate 100
+# SSRF hunting with OOB on cloud targets
+hhunter -l cloud_targets.txt --ssrf --cloud --oob --oob-url http://vps:8888
 
-# Diff-only mode (show only significant findings)
-hhunter scan -u https://api.target.com \
-  --auth \
-  --proxy \
-  --diff-only
+# Full scan on high-value target with HTML report
+hhunter -u https://api.target.com --full --report target_report.html --verify
 
-# With custom headers
-hhunter scan -u https://api.target.com \
-  --auth \
-  -H "Cookie: session=abc123" \
-  -H "User-Agent: Custom"
+# Injection hunting with noise filtering
+hhunter -u https://target.com --injection --ssrf -fs 403,429,500 --diff-only
 ```
 
-## Command-Line Flags
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `-u, --url` | Target URL (required) | - |
-| `-m, --method` | HTTP method | GET |
-| `--auth` | Test authentication headers | false |
-| `--proxy` | Test proxy trust headers | false |
-| `--cors` | Test CORS headers | false |
-| `--cache` | Test cache poisoning | false |
-| `--override` | Test method override | false |
-| `--cloud` | Test cloud/CDN headers | false |
-| `--debug` | Test debug headers | false |
-| `--chain` | Chain multiple mutations | false |
-| `--diff-only` | Only show significant diffs | false |
-| `--priv-check` | Check privilege escalation | false |
-| `--waf-evasion` | Enable WAF bypass techniques | false |
-| `--stealth` | Stealth mode (slower) | false |
-| `--proxy-url` | HTTP proxy URL | - |
-| `-o, --output` | Output file (JSON) | - |
-| `-w, --workers` | Concurrent workers | 30 |
-| `-r, --rate` | Rate limit (ms) | 0 |
-| `-t, --timeout` | Request timeout (seconds) | 30 |
-| `-H, --header` | Custom header | - |
-
-## Output Format
-
-HHunter outputs findings in JSON format when using the `-o` flag:
-
-```json
-[
-  {
-    "header": "X-Forwarded-For",
-    "payload": "127.0.0.1",
-    "impact": "IP Whitelist Bypass",
-    "confidence": "High",
-    "category": "Proxy",
-    "severity": "Critical",
-    "evidence": {
-      "status_change": "401 → 200",
-      "auth_bypass": "true"
-    },
-    "timestamp": "2024-01-15T10:30:00Z"
-  }
-]
-```
-
-## Detection Engine
-
-HHunter uses intelligent differential analysis to detect vulnerabilities:
-
-1. **Baseline Request**: Establishes normal behavior
-2. **Mutation Testing**: Injects various header payloads
-3. **Differential Analysis**: Compares responses
-4. **Evidence Collection**: Documents anomalies
-5. **Severity Scoring**: Prioritizes findings
-
-### Detection Criteria
-
-- Status code transitions (401→200, 403→200)
-- Response body changes (hash comparison)
-- New JSON keys appearing
-- Privilege escalation indicators
-- Timing anomalies
-- Response size changes
-
-## WAF Evasion Techniques
-
-When `--waf-evasion` is enabled:
-
-- Header case randomization (X-fOrWaRdEd-FoR)
-- Duplicate headers
-- Whitespace smuggling
-- HTTP version manipulation
-
-## Use Cases
-
-### 1. Penetration Testing
+### Enterprise & CI/CD Integration
 ```bash
-hhunter scan -u https://target.com/api --auth --proxy --waf-evasion -o findings.json
+# CI/CD pipeline — fail on Critical/High findings
+hhunter -u https://staging.company.com/api --full -q --sarif results.sarif -o findings.json
+# Exit code 1 if Critical/High findings detected
+
+# Automated multi-target scanning
+hhunter -l production_endpoints.txt --auth --proxy --cors --cache -q -o weekly_scan.json
+
+# GitHub Code Scanning integration
+hhunter -u https://api.company.com --full --sarif results.sarif -q
+# Upload results.sarif to GitHub Security tab
 ```
 
-### 2. Bug Bounty Hunting
-```bash
-hhunter scan -u https://api.example.com --auth --cors --cache --diff-only
-```
+---
 
-### 3. Security Assessment
-```bash
-hhunter scan -u https://internal.company.com --proxy --cloud --stealth
-```
+## Detection Categories
 
-### 4. WAF Testing
-```bash
-hhunter scan -u https://protected.site.com --waf-evasion --proxy-url http://localhost:8080
-```
+### Authentication Bypass (173 mutations)
+- JWT none/None/NONE algorithm bypass, empty signature, weak secret signing
+- JWT kid directory traversal (/dev/null, /etc/passwd), jku/x5u header poisoning
+- Bearer token manipulation (null, undefined, admin, boolean, array, object)
+- Basic auth default credentials (admin:admin, root:root, test:test)
+- Role injection (X-Role, X-Admin, X-Privilege, X-Scope, X-ACL)
+- Cloud identity spoofing (AWS ALB OIDC, GCP IAP, Azure AD principal)
+- Service mesh auth bypass (Envoy, Istio attributes)
+- IDOR via user/account/tenant/org ID headers
+- Cookie-based auth bypass and CSRF token bypass
 
-## Best Practices
+### SSRF via Headers (198 mutations)
+- AWS IMDSv1/v2 bypass, ECS task metadata, Lambda runtime API
+- Azure managed identity OAuth2 tokens (management, vault, storage, graph)
+- GCP metadata with Metadata-Flavor header, service account tokens
+- Kubernetes API server, secrets enumeration, etcd, kubelet
+- Docker API (container/image listing)
+- 50+ internal service ports (Redis, MongoDB, Elasticsearch, Consul, Vault, Prometheus, etc.)
+- 20+ IP bypass techniques (octal, hex, decimal, IPv6 mapped, URL authority confusion)
+- DNS rebinding (nip.io, sslip.io, lvh.me, vcap.me, traefik.me)
+- URL scheme attacks (gopher, file, dict)
+- Webhook/callback SSRF headers (X-Callback-URL, X-Webhook-URL, Destination)
 
-1. **Always get authorization** before testing production systems
-2. **Use rate limiting** (`--rate`) to avoid overwhelming targets
-3. **Enable stealth mode** for sensitive engagements
-4. **Route through Burp/ZAP** using `--proxy-url` for manual verification
-5. **Review findings manually** - automated tools can have false positives
+### Injection Engine (148 mutations)
+- SSTI per template engine: Jinja2, Twig, Thymeleaf, Freemarker, Velocity, Pebble, Groovy, Blade, Handlebars
+- Log4Shell: LDAP/LDAPS/DNS/RMI/IIOP/CORBA + 20+ WAF bypass obfuscations + env variable exfiltration
+- Blind SQLi time-based: MySQL (SLEEP, BENCHMARK), PostgreSQL (pg_sleep), MSSQL (WAITFOR), Oracle (DBMS_PIPE), SQLite
+- Error-based SQLi: EXTRACTVALUE, double query, CONVERT
+- Command injection: semicolon, pipe, backtick, subshell, IFS bypass, DNS exfil
+- XSS: script, svg, img, details, math tag mutation, dynamic import
+- NoSQL injection ($gt, $ne, $regex, $where)
+- LDAP injection, OGNL RCE, Java EL, prototype pollution, GraphQL introspection
 
-## Examples
+### CORS Misconfigurations (43 mutations)
+- Arbitrary origin reflection with and without credentials
+- Null origin exploitation via sandboxed iframe
+- Subdomain bypass patterns (victim.com.evil.com, evil.victim.com)
+- URL encoding bypass (%40, %23, %60, %09, %0d, %0a)
+- Protocol scheme bypass (data://, javascript://, vbscript://)
+- Method and header expansion detection
 
-### Example 1: Finding Auth Bypass
-```bash
-$ hhunter scan -u https://api.example.com/profile --auth
+### Cache Poisoning (52 mutations)
+- Host header injection and X-Forwarded-Host manipulation
+- Cache key poisoning via unkeyed headers
+- CDN-specific bypass (Cloudflare, Fastly, Akamai, Varnish)
+- Cache deception attacks
 
-[*] Starting HHunter scan...
-[*] Establishing baseline...
-[+] Baseline: 401 (size: 45, time: 123ms)
-[*] Generated 30 mutations
-[12/30] X-Forwarded-For: 127.0.0.1 -> 401->200 AUTH_BYPASS
+### + 16 More Categories
+Method override, cloud/CDN, debug exposure, HTTP smuggling, hop-by-hop, rate limit bypass, security headers, WebSocket, JWT, CRLF, cookie, content-type, redirect, protocol, encoding, API gateway — all with dedicated mutation sets.
 
-[!] Found 1 potential vulnerabilities:
-─────────────────────────────────────────
-[!] Finding #1
-  Header: X-Forwarded-For
-  Payload: 127.0.0.1
-  Impact: IP Whitelist Bypass
-  Severity: Critical
-  Confidence: High
-  Evidence:
-    - status_change: 401 → 200
-    - auth_bypass: true
-```
-
-### Example 2: Cache Poisoning
-```bash
-$ hhunter scan -u https://example.com/api --cache --diff-only -o cache.json
-
-[*] Starting HHunter scan...
-[+] Baseline: 200 (size: 1234, time: 89ms)
-[*] Generated 16 mutations
-[5/16] X-Forwarded-Host: evil.com -> NEW_KEYS:['location']
-
-[+] Results saved to cache.json
-```
-
-## Architecture
-
-```
-hhunter/
-├── engine/          # Core scanning engine
-│   ├── orchestrator.go  # Main scan coordinator
-│   ├── context.go       # Request/response handling
-│   └── diff.go          # Differential analysis
-├── headers/         # Attack payloads by category
-│   ├── auth.go
-│   ├── proxy.go
-│   ├── cors.go
-│   ├── cache.go
-│   ├── override.go
-│   ├── cloud.go
-│   └── debug.go
-├── detectors/       # Intelligence layer
-│   ├── status.go
-│   ├── body.go
-│   ├── timing.go
-│   └── privilege.go
-└── payloads/        # JSON payload definitions
-```
+---
 
 ## Contributing
 
-Contributions welcome! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Add tests for new functionality
-4. Submit a pull request
+We welcome contributions! Here's how you can help:
+
+- **Report bugs** via [GitHub Issues](https://github.com/cc1a2b/HHunter/issues)
+- **Suggest features** or new attack categories
+- **Add mutations** for emerging attack vectors
+- **Submit pull requests** with enhancements
+
+### Development Setup
+```bash
+git clone https://github.com/cc1a2b/HHunter.git
+cd HHunter
+go mod tidy
+go build -o hhunter .
+```
+
+### Project Structure
+```
+HHunter/
+├── main.go                 # CLI entry point, flag parsing, scan orchestration
+├── engine/
+│   ├── orchestrator.go     # Core scan engine, mutation testing, finding generation
+│   ├── context.go          # HTTP request execution, baseline profiling
+│   ├── diff.go             # Differential analysis, auth bypass, sensitive data detection
+│   ├── similarity.go       # Response similarity (LCS, structural, header comparison)
+│   ├── dedup.go            # Finding deduplication by root cause
+│   ├── oob.go              # Out-of-band callback server
+│   ├── chain.go            # Chained multi-header attack engine
+│   ├── adaptive.go         # Technology-adaptive mutation prioritization
+│   ├── report.go           # HTML and SARIF report generation
+│   └── probes.go           # Recon probes (reflection, methods, host injection)
+├── headers/                # 15 mutation files (1100+ mutations)
+│   ├── auth.go             # 173 auth bypass mutations
+│   ├── ssrf.go             # 198 SSRF mutations
+│   ├── injection.go        # 148 injection mutations
+│   ├── cors.go             # 43 CORS mutations
+│   └── ...                 # cache, cloud, debug, smuggling, jwt, crlf, etc.
+└── detectors/              # Response analysis detectors
+```
+
+---
 
 ## License
 
-MIT License - see LICENSE file
+HHunter is released under the **MIT License**. See [LICENSE](LICENSE) for details.
 
-## Disclaimer
+```
+Copyright (c) 2024-2026 Hussain Alsharman
+Licensed under MIT License - free for commercial and personal use
+```
 
-This tool is for authorized security testing only. Users are responsible for obtaining proper authorization before testing any systems they do not own.
+---
 
-## Credits
+## Support
 
-Created for offensive security professionals, penetration testers, and bug bounty hunters.
+If HHunter helps with your security research or professional work:
+
+<div align="center">
+
+[![Buy Me A Coffee](https://cdn.buymeacoffee.com/buttons/default-orange.png)](https://www.buymeacoffee.com/cc1a2b)
+
+**Star this repo** | **Follow [@cc1a2b](https://twitter.com/cc1a2b)** | **Share with others**
+
+</div>
+
+---
+
+<div align="center">
+
+**HHunter — Advanced HTTP Header Vulnerability Scanner**
+
+*Built by [cc1a2b](https://github.com/cc1a2b) for the security community*
+
+</div>

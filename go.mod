@@ -1,3 +1,3 @@
-module github.com/cc1a2b/jshunter
+module github.com/cc1a2b/hhunter
 
-go 1.21
+go 1.23

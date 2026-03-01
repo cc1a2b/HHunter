@@ -3,7 +3,7 @@ package detectors
 import (
 	"math"
 
-	"github.com/cc1a2b/jshunter/engine"
+	"github.com/cc1a2b/hhunter/engine"
 )
 
 type TimingDetector struct{}
