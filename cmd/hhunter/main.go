@@ -1,7 +1,11 @@
 package main
 
 import (
+	"archive/tar"
+	"archive/zip"
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -9,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	dbg "runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -17,7 +22,15 @@ import (
 	"github.com/cc1a2b/HHunter/headers"
 )
 
-var version = "v0.1"
+var version = "dev"
+
+func init() {
+	if version == "dev" {
+		if info, ok := dbg.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+			version = info.Main.Version
+		}
+	}
+}
 
 type arrayFlags []string
 
@@ -1068,15 +1081,6 @@ func updateTool() {
 	}
 
 	if downloadURL == "" {
-		for _, asset := range release.Assets {
-			if asset.Name == "hhunter" || strings.HasPrefix(asset.Name, "hhunter") {
-				downloadURL = asset.BrowserDownloadURL
-				break
-			}
-		}
-	}
-
-	if downloadURL == "" {
 		fmt.Printf("\033[0;31m[ERROR]\033[0m No suitable binary found for your platform (%s_%s)\n", goos, goarch)
 		fmt.Printf("\033[0;33m[INFO]\033[0m Please download manually from: https://github.com/cc1a2b/HHunter/releases/tag/%s\n", release.TagName)
 		return
@@ -1113,6 +1117,21 @@ func updateTool() {
 		return
 	}
 
+	// Extract binary from archive
+	var extractedBinary []byte
+	if strings.HasSuffix(downloadURL, ".tar.gz") || strings.HasSuffix(downloadURL, ".tgz") {
+		extractedBinary, err = extractFromTarGz(binaryData, "hhunter")
+	} else if strings.HasSuffix(downloadURL, ".zip") {
+		extractedBinary, err = extractFromZip(binaryData, "hhunter")
+	} else {
+		extractedBinary = binaryData
+	}
+
+	if err != nil {
+		fmt.Printf("\033[0;31m[ERROR]\033[0m Failed to extract binary from archive: %v\n", err)
+		return
+	}
+
 	currentPath, err := os.Executable()
 	if err != nil {
 		fmt.Printf("\033[0;31m[ERROR]\033[0m Failed to get current executable path: %v\n", err)
@@ -1125,7 +1144,7 @@ func updateTool() {
 		return
 	}
 
-	if err := os.WriteFile(currentPath, binaryData, 0755); err != nil {
+	if err := os.WriteFile(currentPath, extractedBinary, 0755); err != nil {
 		fmt.Printf("\033[0;31m[ERROR]\033[0m Failed to write new binary: %v\n", err)
 		os.Rename(backupPath, currentPath)
 		return
@@ -1135,6 +1154,61 @@ func updateTool() {
 
 	fmt.Printf("\033[0;32m[SUCCESS]\033[0m Successfully updated to %s!\n", release.TagName)
 	fmt.Printf("\033[0;34m[INFO]\033[0m Restart the tool to use the new version.\n")
+}
+
+func extractFromTarGz(data []byte, binaryName string) ([]byte, error) {
+	gz, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("gzip open: %w", err)
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("tar read: %w", err)
+		}
+		name := hdr.Name
+		// Strip directory prefix if present
+		if idx := strings.LastIndex(name, "/"); idx >= 0 {
+			name = name[idx+1:]
+		}
+		// Match: hhunter, hhunter-linux-amd64, etc.
+		if name == binaryName || strings.HasPrefix(name, binaryName+"-") {
+			return io.ReadAll(tr)
+		}
+	}
+	return nil, fmt.Errorf("binary %q not found in archive", binaryName)
+}
+
+func extractFromZip(data []byte, binaryName string) ([]byte, error) {
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil, fmt.Errorf("zip open: %w", err)
+	}
+
+	for _, f := range zr.File {
+		name := f.Name
+		// Strip directory prefix if present
+		if idx := strings.LastIndex(name, "/"); idx >= 0 {
+			name = name[idx+1:]
+		}
+		// Match: hhunter.exe, hhunter-windows-amd64.exe, etc.
+		if name == binaryName || name == binaryName+".exe" ||
+			strings.HasPrefix(name, binaryName+"-") {
+			rc, err := f.Open()
+			if err != nil {
+				return nil, err
+			}
+			defer rc.Close()
+			return io.ReadAll(rc)
+		}
+	}
+	return nil, fmt.Errorf("binary %q not found in archive", binaryName)
 }
 
 func saveResults(result *engine.ScanResult, filename string) {
