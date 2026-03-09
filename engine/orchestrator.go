@@ -37,7 +37,7 @@ var (
 )
 
 const (
-	baselineSamples     = 3
+	baselineSamples     = 5
 	minConfidenceReport = 0.4
 )
 
@@ -119,17 +119,18 @@ type ScanStats struct {
 }
 
 type Orchestrator struct {
-	config      *ScanConfig
-	client      *http.Client
-	baseline    *ResponseContext
-	profile     *BaselineProfile
-	reconResult *ReconResult
-	techProfile *TechProfile
-	findings    []Finding
-	verified    int
-	mu          sync.Mutex
-	progress    int64 // atomic counter for progress display
-	totalMuts   int64 // total mutations to test
+	config           *ScanConfig
+	client           *http.Client
+	baseline         *ResponseContext
+	profile          *BaselineProfile
+	reconResult      *ReconResult
+	techProfile      *TechProfile
+	findings         []Finding
+	verified         int
+	confirmedHeaders map[string]bool // headers that showed signal from benign probes
+	mu               sync.Mutex
+	progress         int64 // atomic counter for progress display
+	totalMuts        int64 // total mutations to test
 }
 
 func NewOrchestrator(config *ScanConfig) *Orchestrator {
@@ -162,9 +163,10 @@ func NewOrchestrator(config *ScanConfig) *Orchestrator {
 	}
 
 	return &Orchestrator{
-		config:   config,
-		client:   client,
-		findings: []Finding{},
+		config:           config,
+		client:           client,
+		findings:         []Finding{},
+		confirmedHeaders: make(map[string]bool),
 	}
 }
 
@@ -272,42 +274,69 @@ func (o *Orchestrator) Scan() (*ScanResult, error) {
 		}
 	}
 
-	fmt.Printf("\033[0;34m[INFO]\033[0m Generated \033[1m%d\033[0m mutations across %d categories\n",
-		len(mutations), o.countActiveCategories())
-
 	if o.config.Workers == 0 {
 		o.config.Workers = 30
 	}
 
-	// Concurrent mutation testing with progress
-	atomic.StoreInt64(&o.totalMuts, int64(len(mutations)))
-	atomic.StoreInt64(&o.progress, 0)
-
-	sem := make(chan struct{}, o.config.Workers)
-	var wg sync.WaitGroup
-
-	for i, mutation := range mutations {
-		wg.Add(1)
-		sem <- struct{}{}
-
-		go func(idx int, mut Mutation) {
-			defer wg.Done()
-			defer func() { <-sem }()
-
-			delay := o.config.RateDelay
-			if o.config.Stealth {
-				delay = maxInt(delay, 500)
-			}
-			if delay > 0 {
-				time.Sleep(time.Duration(delay) * time.Millisecond)
-			}
-
-			o.testMutation(mut, idx+1, len(mutations))
-			atomic.AddInt64(&o.progress, 1)
-		}(i, mutation)
+	// Rule #5: Split mutations into benign (phase 1) and escalation (phase 2)
+	var benignMutations, escalationMutations []Mutation
+	for _, m := range mutations {
+		if isEscalationPayload(m.Value) {
+			escalationMutations = append(escalationMutations, m)
+		} else {
+			benignMutations = append(benignMutations, m)
+		}
 	}
 
-	wg.Wait()
+	totalCount := len(benignMutations) + len(escalationMutations)
+	fmt.Printf("\033[0;34m[INFO]\033[0m Generated \033[1m%d\033[0m mutations across %d categories",
+		totalCount, o.countActiveCategories())
+	if len(escalationMutations) > 0 {
+		fmt.Printf(" (%d benign, %d escalation)", len(benignMutations), len(escalationMutations))
+	}
+	fmt.Println()
+
+	// Phase 1: Run benign probes
+	atomic.StoreInt64(&o.totalMuts, int64(totalCount))
+	atomic.StoreInt64(&o.progress, 0)
+	o.runMutationBatch(benignMutations)
+
+	// Build confirmed header set from phase 1 findings + recon
+	o.mu.Lock()
+	for _, f := range o.findings {
+		o.confirmedHeaders[strings.ToLower(f.Header)] = true
+	}
+	if o.reconResult != nil {
+		for h := range o.reconResult.ReflectedHeaderSet() {
+			o.confirmedHeaders[h] = true
+		}
+	}
+	o.mu.Unlock()
+
+	// Phase 2: Run escalation payloads only for confirmed headers
+	if len(escalationMutations) > 0 {
+		if len(o.confirmedHeaders) > 0 {
+			var filtered []Mutation
+			for _, m := range escalationMutations {
+				if o.confirmedHeaders[strings.ToLower(m.Header)] {
+					filtered = append(filtered, m)
+				}
+			}
+			if len(filtered) > 0 {
+				fmt.Printf("\033[0;33m[ESCALATE]\033[0m %d injection payloads for %d confirmed headers\n",
+					len(filtered), len(o.confirmedHeaders))
+				o.runMutationBatch(filtered)
+			} else {
+				skipped := len(escalationMutations)
+				atomic.AddInt64(&o.progress, int64(skipped))
+				fmt.Printf("\033[0;34m[SKIP]\033[0m %d escalation payloads — no confirmed headers match\n", skipped)
+			}
+		} else {
+			skipped := len(escalationMutations)
+			atomic.AddInt64(&o.progress, int64(skipped))
+			fmt.Printf("\033[0;34m[SKIP]\033[0m %d escalation payloads — no reflection/signal detected\n", skipped)
+		}
+	}
 
 	// OOB collection phase
 	oobConfirmed := 0
@@ -433,9 +462,37 @@ func (o *Orchestrator) testMutation(mutation Mutation, current, total int) {
 	}
 
 	if diff.IsSignificant() {
+		// Rule #4: Discard findings fully explained by volatile fields
+		if isVolatileOnly(diff) {
+			return
+		}
+
+		// Rule #2: Content-Type injection is ONLY real if value reflects
+		// in body or response Content-Type header changed to match
+		if mutation.Category == "ContentType" {
+			confirmed := false
+			if strings.Contains(string(resp.Body), mutation.Value) {
+				confirmed = true
+			}
+			if diff.ContentTypeChanged {
+				mutatedCT := getHeaderValue(resp.Headers, "content-type")
+				if strings.Contains(mutatedCT, mutation.Value) {
+					confirmed = true
+				}
+			}
+			if !confirmed {
+				return
+			}
+		}
+
 		finding := o.createFinding(mutation, diff, resp)
 
 		if finding.ConfidenceScore >= minConfidenceReport {
+			// Rule #3: Hop-by-hop auto-escalation to cache poisoning
+			if mutation.Category == "HopByHop" {
+				o.hopByHopEscalate(&finding)
+			}
+
 			// Smart verification
 			if o.config.Verify && finding.ConfidenceScore > 0.6 {
 				if o.verifyFinding(&finding, mutation) {
@@ -447,8 +504,76 @@ func (o *Orchestrator) testMutation(mutation Mutation, current, total int) {
 
 			o.printMutationResult(current, total, mutation, diff, resp)
 			o.addFinding(finding)
+
+			// Track confirmed headers for escalation phase (Rule #5)
+			o.mu.Lock()
+			o.confirmedHeaders[strings.ToLower(mutation.Header)] = true
+			o.mu.Unlock()
 		}
 	}
+}
+
+// runMutationBatch executes a batch of mutations concurrently
+func (o *Orchestrator) runMutationBatch(mutations []Mutation) {
+	sem := make(chan struct{}, o.config.Workers)
+	var wg sync.WaitGroup
+	total := int(atomic.LoadInt64(&o.totalMuts))
+
+	for i, mutation := range mutations {
+		wg.Add(1)
+		sem <- struct{}{}
+
+		go func(idx int, mut Mutation) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			delay := o.config.RateDelay
+			if o.config.Stealth {
+				delay = maxInt(delay, 500)
+			}
+			if delay > 0 {
+				time.Sleep(time.Duration(delay) * time.Millisecond)
+			}
+
+			current := int(atomic.AddInt64(&o.progress, 1))
+			o.testMutation(mut, current, total)
+		}(i, mutation)
+	}
+
+	wg.Wait()
+}
+
+// isEscalationPayload returns true for injection payloads that should only
+// be sent after a benign probe confirms the header is interesting (Rule #5)
+func isEscalationPayload(value string) bool {
+	lower := strings.ToLower(value)
+	markers := []string{
+		// XSS
+		"<script", "<img ", "<svg", "<iframe", "<object", "<embed",
+		"onerror=", "onload=", "onfocus=", "onmouseover=",
+		"javascript:", "\"alert(", "'alert(",
+		// SSTI
+		"${jndi:", "${{", "{{7*7}}", "#{7*7}",
+		"${7*7}", "{{config", "{{self",
+		// CRLF
+		"%0d%0a", "%0D%0A",
+		// SQLi
+		"' or ", "\" or ", "1=1", "union select", "union+select",
+		"' and ", "\" and ", "sleep(", "waitfor delay",
+		// Command injection
+		";cat ", "|cat ", "`cat ", "$(cat",
+		";whoami", "|whoami", "`whoami", "$(whoami",
+	}
+	for _, m := range markers {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	// Check for literal CRLF bytes
+	if strings.ContainsAny(value, "\r\n") {
+		return true
+	}
+	return false
 }
 
 // matchesFilters checks if a response matches the configured match/filter rules
@@ -495,6 +620,65 @@ func (o *Orchestrator) matchesFilters(resp *ResponseContext) bool {
 	}
 
 	return true
+}
+
+// isVolatileOnly returns true if all differences are fully explained by
+// volatile fields — these findings should be silently discarded (Rule #4)
+func isVolatileOnly(diff *DiffResult) bool {
+	// Real security signals are never volatile
+	if diff.AuthBypass || diff.PrivilegeElevate || diff.CORSMisconfigured ||
+		diff.HeaderReflection || len(diff.SensitiveDataFound) > 0 {
+		return false
+	}
+	if diff.StatusChanged {
+		return false
+	}
+	if diff.LocationChanged {
+		return false
+	}
+	if diff.AuthChallengeGone {
+		return false
+	}
+
+	// After volatile filtering, if no meaningful header/cookie/body/info
+	// changes remain, the diff is volatile-only
+	if len(diff.HeadersAdded) == 0 && len(diff.HeadersRemoved) == 0 &&
+		len(diff.SetCookieValues) == 0 && len(diff.NewJSONKeys) == 0 &&
+		len(diff.InfoDisclosure) == 0 && !diff.ContentTypeChanged &&
+		diff.TimingAnomaly == "" {
+		return true
+	}
+
+	return false
+}
+
+// hopByHopEscalate sends a clean follow-up request to check if a hop-by-hop
+// finding persists (indicating cache poisoning). Escalates to Critical if so (Rule #3).
+func (o *Orchestrator) hopByHopEscalate(finding *Finding) {
+	cleanCtx := NewRequestContext(o.config.URL, o.config.Method)
+	for k, v := range o.config.Headers {
+		cleanCtx.AddHeader(k, v)
+	}
+	if len(o.config.Body) > 0 {
+		cleanCtx.SetBody(o.config.Body, o.config.ContentType)
+	}
+
+	cleanResp, err := cleanCtx.Execute(o.client)
+	if err != nil {
+		return
+	}
+
+	cleanDiff := CalculateDiffWithProfile(o.baseline, cleanResp, o.profile)
+	if cleanDiff.IsSignificant() && !isVolatileOnly(cleanDiff) {
+		// Delta persists without mutation → cache poisoning!
+		finding.Severity = "Critical"
+		finding.CVSS = 9.1
+		finding.CWE = "CWE-525"
+		finding.ConfidenceScore = 0.9
+		finding.Confidence = "Confirmed"
+		finding.Impact = "Cache Poisoning via " + finding.Impact
+		finding.Evidence["cache_poisoning"] = "CONFIRMED: response delta persists on clean request"
+	}
 }
 
 func (o *Orchestrator) printMutationResult(current, total int, mutation Mutation, diff *DiffResult, resp *ResponseContext) {
@@ -601,8 +785,21 @@ func (o *Orchestrator) createFinding(mutation Mutation, diff *DiffResult, resp *
 
 	severity, cvss, cwe, confidence := calculateSeverityStrict(mutation, diff, o.baseline, resp, o.profile)
 
+	// Rule #4: Evidence-based confidence labeling
 	confidenceLabel := "Low"
-	if confidence >= 0.8 {
+	if diff.HeaderReflection && strings.Contains(diff.ReflectedValue, "body:") {
+		// Literal reflection in body → always CONFIRMED
+		confidenceLabel = "Confirmed"
+		if confidence < 0.8 {
+			confidence = 0.8
+		}
+	} else if diff.ContentTypeChanged {
+		// Response Content-Type hijacked → CONFIRMED
+		confidenceLabel = "Confirmed"
+		if confidence < 0.8 {
+			confidence = 0.8
+		}
+	} else if confidence >= 0.8 {
 		confidenceLabel = "Confirmed"
 	} else if confidence >= 0.6 {
 		confidenceLabel = "High"

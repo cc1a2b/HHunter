@@ -62,6 +62,10 @@ type BaselineProfile struct {
 	BaselineKeys     []string        // JSON keys from baseline
 	BaselineSensitive []string       // sensitive patterns already in baseline
 	Responses        []*ResponseContext
+
+	// Volatile field tracking (Rule #1)
+	VolatileHeaders map[string]bool // headers whose values change across samples
+	VolatileCookies map[string]bool // cookie names with rotating values
 }
 
 func NewBaselineProfile(responses []*ResponseContext) *BaselineProfile {
@@ -148,6 +152,84 @@ func NewBaselineProfile(responses []*ResponseContext) *BaselineProfile {
 		bp.BaselineSensitive = append(bp.BaselineSensitive, s)
 	}
 
+	// --- Volatile field detection (Rule #1) ---
+	bp.VolatileHeaders = make(map[string]bool)
+	bp.VolatileCookies = make(map[string]bool)
+
+	// Always-volatile headers — excluded from ALL comparisons regardless
+	alwaysVolatile := []string{
+		"set-cookie", "date", "etag", "x-request-id", "cf-ray",
+		"x-trace-id", "age", "x-amz-request-id", "x-amz-cf-id",
+		"x-correlation-id", "x-b3-traceid", "x-b3-spanid",
+		"traceparent", "tracestate", "expires", "x-request-start",
+		"x-runtime", "x-timer", "x-envoy-upstream-service-time",
+	}
+	for _, h := range alwaysVolatile {
+		bp.VolatileHeaders[h] = true
+	}
+
+	// Detect headers whose values change between baseline samples
+	if len(responses) > 1 {
+		// Build header fingerprint per sample: lowercase name → joined values
+		type hfp map[string]string
+		var fingerprints []hfp
+		for _, r := range responses {
+			fp := make(hfp)
+			for k, vals := range r.Headers {
+				fp[strings.ToLower(k)] = strings.Join(vals, "\x00")
+			}
+			fingerprints = append(fingerprints, fp)
+		}
+
+		// Collect all header names
+		allHeaders := make(map[string]bool)
+		for _, fp := range fingerprints {
+			for k := range fp {
+				allHeaders[k] = true
+			}
+		}
+
+		// Header is volatile if its value differs between any two samples
+		for h := range allHeaders {
+			if bp.VolatileHeaders[h] {
+				continue
+			}
+			ref, refExists := fingerprints[0][h]
+			for i := 1; i < len(fingerprints); i++ {
+				val, exists := fingerprints[i][h]
+				if refExists != exists || ref != val {
+					bp.VolatileHeaders[h] = true
+					break
+				}
+			}
+		}
+	}
+
+	// Detect volatile cookie names from Set-Cookie headers
+	cookieNameValues := make(map[string]map[string]bool) // name → set of full values
+	for _, r := range responses {
+		for k, vals := range r.Headers {
+			if !strings.EqualFold(k, "set-cookie") {
+				continue
+			}
+			for _, v := range vals {
+				name := cookieNameFromSetCookie(v)
+				if name == "" {
+					continue
+				}
+				if cookieNameValues[name] == nil {
+					cookieNameValues[name] = make(map[string]bool)
+				}
+				cookieNameValues[name][v] = true
+			}
+		}
+	}
+	for name, vals := range cookieNameValues {
+		if len(vals) > 1 {
+			bp.VolatileCookies[name] = true
+		}
+	}
+
 	return bp
 }
 
@@ -231,6 +313,41 @@ func CalculateDiffWithProfile(baseline, mutated *ResponseContext, profile *Basel
 	mutatedAuth := getHeaderValue(mutated.Headers, "www-authenticate")
 	if baselineAuth != "" && mutatedAuth == "" {
 		diff.AuthChallengeGone = true
+	}
+
+	// --- Filter volatile fields (Rule #1) ---
+	if profile != nil && len(profile.VolatileHeaders) > 0 {
+		diff.HeadersAdded = filterNonVolatile(diff.HeadersAdded, profile.VolatileHeaders)
+		diff.HeadersRemoved = filterNonVolatile(diff.HeadersRemoved, profile.VolatileHeaders)
+
+		// Filter volatile cookies from SetCookieValues
+		if len(profile.VolatileCookies) > 0 && len(diff.SetCookieValues) > 0 {
+			var filteredCookies []string
+			for _, sc := range diff.SetCookieValues {
+				name := cookieNameFromSetCookie(sc)
+				if !profile.VolatileCookies[name] {
+					filteredCookies = append(filteredCookies, sc)
+				}
+			}
+			diff.SetCookieValues = filteredCookies
+			diff.SetCookiePresent = len(filteredCookies) > 0
+		}
+
+		// Filter volatile headers from InfoDisclosure
+		if len(diff.InfoDisclosure) > 0 {
+			var filteredInfo []string
+			for _, d := range diff.InfoDisclosure {
+				colonIdx := strings.Index(d, ": ")
+				if colonIdx > 0 {
+					headerName := strings.ToLower(d[:colonIdx])
+					if profile.VolatileHeaders[headerName] {
+						continue
+					}
+				}
+				filteredInfo = append(filteredInfo, d)
+			}
+			diff.InfoDisclosure = filteredInfo
+		}
 	}
 
 	return diff
@@ -1085,4 +1202,24 @@ func stddev(values []float64) float64 {
 		sum += diff * diff
 	}
 	return math.Sqrt(sum / float64(len(values)-1))
+}
+
+// filterNonVolatile returns only headers NOT in the volatile set
+func filterNonVolatile(headers []string, volatile map[string]bool) []string {
+	var filtered []string
+	for _, h := range headers {
+		if !volatile[strings.ToLower(h)] {
+			filtered = append(filtered, h)
+		}
+	}
+	return filtered
+}
+
+// cookieNameFromSetCookie extracts the cookie name from a Set-Cookie value
+func cookieNameFromSetCookie(sc string) string {
+	idx := strings.Index(sc, "=")
+	if idx <= 0 {
+		return ""
+	}
+	return strings.TrimSpace(sc[:idx])
 }
