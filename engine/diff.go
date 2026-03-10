@@ -160,13 +160,28 @@ func NewBaselineProfile(responses []*ResponseContext) *BaselineProfile {
 	alwaysVolatile := []string{
 		"set-cookie", "date", "etag", "x-request-id", "cf-ray",
 		"x-trace-id", "age", "x-amz-request-id", "x-amz-cf-id",
+		"x-amzn-trace-id", "x-amz-cf-pop",
 		"x-correlation-id", "x-b3-traceid", "x-b3-spanid",
 		"traceparent", "tracestate", "expires", "x-request-start",
 		"x-runtime", "x-timer", "x-envoy-upstream-service-time",
+		"x-ruxit-js-agent", "x-oneagent-js-injection",
+		"x-cloud-trace-context", "x-ms-request-id",
+		"x-edge-ip", "x-edge-location", "x-cache",
+		"x-cache-hits", "x-served-by", "x-varnish",
+		"x-fastly-request-id", "fastly-debug-digest",
 	}
 	for _, h := range alwaysVolatile {
 		bp.VolatileHeaders[h] = true
 	}
+
+	// Pattern-based volatile detection: any header containing these substrings
+	// is always volatile regardless of whether it changed between samples
+	volatilePatterns := []string{
+		"token", "nonce", "seed", "csrf", "session", "timestamp",
+		"request-id", "requestid", "trace-id", "traceid",
+		"correlation", "txid", "transaction-id",
+	}
+	// We'll apply this after collecting all headers below
 
 	// Detect headers whose values change between baseline samples
 	if len(responses) > 1 {
@@ -198,6 +213,27 @@ func NewBaselineProfile(responses []*ResponseContext) *BaselineProfile {
 			for i := 1; i < len(fingerprints); i++ {
 				val, exists := fingerprints[i][h]
 				if refExists != exists || ref != val {
+					bp.VolatileHeaders[h] = true
+					break
+				}
+			}
+		}
+	}
+
+	// Apply pattern-based volatile detection to all known headers
+	if len(responses) > 0 {
+		allKnownHeaders := make(map[string]bool)
+		for _, r := range responses {
+			for k := range r.Headers {
+				allKnownHeaders[strings.ToLower(k)] = true
+			}
+		}
+		for h := range allKnownHeaders {
+			if bp.VolatileHeaders[h] {
+				continue
+			}
+			for _, pat := range volatilePatterns {
+				if strings.Contains(h, pat) {
 					bp.VolatileHeaders[h] = true
 					break
 				}
@@ -1080,9 +1116,17 @@ func (d *DiffResult) IsSignificant() bool {
 		return true
 	}
 
-	// Timing anomaly (already filtered to only statistical outliers)
+	// Timing anomaly: ONLY significant if combined with other structural signal (Rule #2)
+	// Timing alone is never enough — must be accompanied by status/body/header change
 	if d.TimingAnomaly == "critical_delay" || d.TimingAnomaly == "significant_delay" {
-		return true
+		hasStructuralSignal := d.StatusChanged || d.BodyHashChanged ||
+			len(d.HeadersAdded) > 0 || len(d.HeadersRemoved) > 0 ||
+			d.HeaderReflection || d.ContentTypeChanged
+		if hasStructuralSignal {
+			return true
+		}
+		// Timing alone is flagged but handled as timing-only by orchestrator
+		return true // let orchestrator decide display
 	}
 
 	// Status change only matters for meaningful transitions:
@@ -1109,6 +1153,40 @@ func (d *DiffResult) IsSignificant() bool {
 	}
 
 	return false
+}
+
+// IsTimingOnly returns true if timing anomaly is the ONLY signal (Rule #2)
+func (d *DiffResult) IsTimingOnly() bool {
+	if d.TimingAnomaly == "" {
+		return false
+	}
+	// If any structural signal exists alongside timing, it's not timing-only
+	if d.StatusChanged || d.BodyHashChanged || d.HeaderReflection ||
+		d.AuthBypass || d.PrivilegeElevate || d.CORSMisconfigured ||
+		d.ContentTypeChanged || d.LocationChanged || d.AuthChallengeGone ||
+		len(d.HeadersAdded) > 0 || len(d.HeadersRemoved) > 0 ||
+		len(d.NewJSONKeys) > 0 || len(d.SensitiveDataFound) > 0 ||
+		len(d.InfoDisclosure) > 0 {
+		return false
+	}
+	return true
+}
+
+// IsCookieOnly returns true if new cookies are the ONLY difference
+func (d *DiffResult) IsCookieOnly() bool {
+	if len(d.SetCookieValues) == 0 {
+		return false
+	}
+	// If any other signal exists, it's not cookie-only
+	if d.StatusChanged || d.BodyHashChanged || d.HeaderReflection ||
+		d.AuthBypass || d.PrivilegeElevate || d.CORSMisconfigured ||
+		d.ContentTypeChanged || d.LocationChanged || d.AuthChallengeGone ||
+		len(d.HeadersAdded) > 0 || len(d.HeadersRemoved) > 0 ||
+		len(d.NewJSONKeys) > 0 || len(d.SensitiveDataFound) > 0 ||
+		len(d.InfoDisclosure) > 0 || d.TimingAnomaly != "" {
+		return false
+	}
+	return true
 }
 
 // --- Helper functions ---

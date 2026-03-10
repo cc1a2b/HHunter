@@ -59,6 +59,11 @@ type Finding struct {
 	Verified        bool              `json:"verified,omitempty"`
 	VerifiedAt      time.Time         `json:"verified_at,omitempty"`
 	ReconSource     string            `json:"recon_source,omitempty"`
+	CurlCommand     string            `json:"curl_command,omitempty"`
+	Reproducible    bool              `json:"reproducible,omitempty"`
+	VerifyAttempts  int               `json:"verify_attempts,omitempty"`
+	TimingOnly      bool              `json:"timing_only,omitempty"`
+	ScopeNote       string            `json:"scope_note,omitempty"`
 }
 
 type MissingSecurityHeader struct {

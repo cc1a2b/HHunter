@@ -38,7 +38,7 @@ var (
 
 const (
 	baselineSamples     = 5
-	minConfidenceReport = 0.4
+	minConfidenceReport = 0.2 // let orchestrator logic handle display filtering
 )
 
 type ScanConfig struct {
@@ -90,6 +90,12 @@ type ScanConfig struct {
 	FilterStatus    []int
 	MatchSize       int64
 	FilterSize      int64
+
+	// v0.2.2 false-positive elimination
+	TimingOnly bool     // --timing-only: show timing-only findings
+	ShowAll    bool     // --all: show LOW and timing-only findings
+	Verbose    bool     // --verbose: show normalized diff for each finding
+	ScopeRules []string // loaded from --scope file
 }
 
 type ScanResult struct {
@@ -358,6 +364,27 @@ func (o *Orchestrator) Scan() (*ScanResult, error) {
 		}
 	}
 
+	// Filter findings that cannot be reproduced or are out of scope (Rule #9)
+	o.mu.Lock()
+	var filteredFindings []Finding
+	for _, f := range o.findings {
+		// Remove findings where new_cookies is the primary evidence
+		if _, hasCookies := f.Evidence["new_cookies"]; hasCookies {
+			evidenceCount := 0
+			for k := range f.Evidence {
+				if k != "new_cookies" && k != "timing_anomaly" && k != "timing_delta_ms" {
+					evidenceCount++
+				}
+			}
+			if evidenceCount == 0 {
+				continue
+			}
+		}
+		filteredFindings = append(filteredFindings, f)
+	}
+	o.findings = filteredFindings
+	o.mu.Unlock()
+
 	// Deduplicate findings
 	o.mu.Lock()
 	o.findings = DeduplicateFindings(o.findings)
@@ -395,40 +422,7 @@ func (o *Orchestrator) Scan() (*ScanResult, error) {
 }
 
 func (o *Orchestrator) testMutation(mutation Mutation, current, total int) {
-	ctx := NewRequestContext(o.config.URL, o.config.Method)
-	for k, v := range o.config.Headers {
-		ctx.AddHeader(k, v)
-	}
-	if len(o.config.Body) > 0 {
-		ctx.SetBody(o.config.Body, o.config.ContentType)
-	}
-
-	// Handle chained mutations (multi-header)
-	if strings.Contains(mutation.Header, " + ") {
-		// Parse chained header format: "Header1 + Header2"
-		// Value format: "Header1: val1 | Header2: val2"
-		pairs := strings.Split(mutation.Value, " | ")
-		for _, pair := range pairs {
-			colonIdx := strings.Index(pair, ": ")
-			if colonIdx > 0 {
-				hName := pair[:colonIdx]
-				hVal := pair[colonIdx+2:]
-				if o.config.WAFEvasion {
-					hName = randomizeCase(hName)
-				}
-				ctx.AddHeader(hName, hVal)
-			}
-		}
-	} else {
-		headerName := mutation.Header
-		headerValue := mutation.Value
-
-		if o.config.WAFEvasion {
-			headerName = randomizeCase(headerName)
-		}
-
-		ctx.AddHeader(headerName, headerValue)
-	}
+	ctx := o.buildMutationRequest(mutation)
 
 	resp, err := ctx.Execute(o.client)
 	if err != nil {
@@ -467,50 +461,322 @@ func (o *Orchestrator) testMutation(mutation Mutation, current, total int) {
 			return
 		}
 
-		// Rule #2: Content-Type injection is ONLY real if value reflects
-		// in body or response Content-Type header changed to match
+		// Rule #9: Discard findings where new_cookies is the ONLY evidence
+		if diff.IsCookieOnly() {
+			return
+		}
+
+		// Rule #3: Content-Type injection validation
 		if mutation.Category == "ContentType" {
-			confirmed := false
-			if strings.Contains(string(resp.Body), mutation.Value) {
-				confirmed = true
+			if !o.validateContentType(mutation, diff, resp) {
+				return
 			}
-			if diff.ContentTypeChanged {
-				mutatedCT := getHeaderValue(resp.Headers, "content-type")
-				if strings.Contains(mutatedCT, mutation.Value) {
-					confirmed = true
-				}
+		}
+
+		// Rule #4: Hop-by-hop structural validation
+		if mutation.Category == "HopByHop" {
+			if !o.validateHopByHop(diff) {
+				return
 			}
-			if !confirmed {
+		}
+
+		// Rule #5: Range header validation
+		if mutation.Category == "Encoding" && isRangeHeader(mutation) {
+			if !o.validateRange(mutation, resp) {
 				return
 			}
 		}
 
 		finding := o.createFinding(mutation, diff, resp)
 
-		if finding.ConfidenceScore >= minConfidenceReport {
-			// Rule #3: Hop-by-hop auto-escalation to cache poisoning
-			if mutation.Category == "HopByHop" {
-				o.hopByHopEscalate(&finding)
+		// Rule #2: Timing-only findings capped at 20% confidence
+		if diff.IsTimingOnly() {
+			finding.TimingOnly = true
+			if finding.ConfidenceScore > 0.2 {
+				finding.ConfidenceScore = 0.2
 			}
+			finding.Confidence = "Low"
+			finding.Severity = "Info"
+			finding.CVSS = 0.0
+			// Skip unless --timing-only or --all
+			if !o.config.TimingOnly && !o.config.ShowAll {
+				return
+			}
+		}
 
-			// Smart verification
-			if o.config.Verify && finding.ConfidenceScore > 0.6 {
-				if o.verifyFinding(&finding, mutation) {
-					o.mu.Lock()
-					o.verified++
-					o.mu.Unlock()
+		// Rule #7: Apply confidence threshold
+		// Only show CONFIRMED (>=0.85) and HIGH (>=0.6) by default
+		if !o.config.ShowAll && finding.ConfidenceScore < 0.6 {
+			return
+		}
+
+		// Generate curl command (Rule #9)
+		finding.CurlCommand = o.generateCurlCommand(mutation)
+
+		// Rule #6: Scope filtering
+		if len(o.config.ScopeRules) > 0 {
+			if note := o.checkScope(finding); note != "" {
+				finding.ScopeNote = note
+			}
+		}
+
+		// Rule #3: Hop-by-hop auto-escalation to cache poisoning
+		if mutation.Category == "HopByHop" {
+			o.hopByHopEscalate(&finding)
+		}
+
+		// Rule #8: Enhanced verification with 3 retries
+		if o.config.Verify && finding.ConfidenceScore >= 0.4 {
+			verified, attempts := o.verifyFindingStrict(&finding, mutation)
+			finding.VerifyAttempts = attempts
+			if verified {
+				finding.Reproducible = true
+				o.mu.Lock()
+				o.verified++
+				o.mu.Unlock()
+			} else if attempts >= 3 {
+				// Failed 3 times → FALSE POSITIVE
+				return
+			}
+		}
+
+		o.printMutationResult(current, total, mutation, diff, resp)
+		o.addFinding(finding)
+
+		// Track confirmed headers for escalation phase
+		o.mu.Lock()
+		o.confirmedHeaders[strings.ToLower(mutation.Header)] = true
+		o.mu.Unlock()
+	}
+}
+
+// buildMutationRequest constructs a request context for a given mutation
+func (o *Orchestrator) buildMutationRequest(mutation Mutation) *RequestContext {
+	ctx := NewRequestContext(o.config.URL, o.config.Method)
+	for k, v := range o.config.Headers {
+		ctx.AddHeader(k, v)
+	}
+	if len(o.config.Body) > 0 {
+		ctx.SetBody(o.config.Body, o.config.ContentType)
+	}
+
+	// Handle chained mutations (multi-header)
+	if strings.Contains(mutation.Header, " + ") {
+		pairs := strings.Split(mutation.Value, " | ")
+		for _, pair := range pairs {
+			colonIdx := strings.Index(pair, ": ")
+			if colonIdx > 0 {
+				hName := pair[:colonIdx]
+				hVal := pair[colonIdx+2:]
+				if o.config.WAFEvasion {
+					hName = randomizeCase(hName)
 				}
+				ctx.AddHeader(hName, hVal)
 			}
+		}
+	} else {
+		headerName := mutation.Header
+		headerValue := mutation.Value
+		if o.config.WAFEvasion {
+			headerName = randomizeCase(headerName)
+		}
+		ctx.AddHeader(headerName, headerValue)
+	}
+	return ctx
+}
 
-			o.printMutationResult(current, total, mutation, diff, resp)
-			o.addFinding(finding)
-
-			// Track confirmed headers for escalation phase (Rule #5)
-			o.mu.Lock()
-			o.confirmedHeaders[strings.ToLower(mutation.Header)] = true
-			o.mu.Unlock()
+// validateContentType implements Rule #3: Content-Type injection validation
+func (o *Orchestrator) validateContentType(mutation Mutation, diff *DiffResult, resp *ResponseContext) bool {
+	// Signal A: injected value appears verbatim in response body
+	if strings.Contains(string(resp.Body), mutation.Value) {
+		return true
+	}
+	// Signal B: response Content-Type header changed to match what we sent
+	if diff.ContentTypeChanged {
+		mutatedCT := getHeaderValue(resp.Headers, "content-type")
+		if strings.Contains(mutatedCT, mutation.Value) {
+			return true
 		}
 	}
+	// Signal C: Vary header added AND body size delta >5% across 3 consistent runs
+	varyHeader := getHeaderValue(resp.Headers, "vary")
+	baselineVary := getHeaderValue(o.baseline.Headers, "vary")
+	if varyHeader != baselineVary && varyHeader != "" {
+		sizeRatio := diff.SizeChangeRatio
+		if sizeRatio > 1.05 || sizeRatio < 0.95 {
+			// Verify with 3 runs
+			consistent := 0
+			for i := 0; i < 3; i++ {
+				ctx := o.buildMutationRequest(mutation)
+				r, err := ctx.Execute(o.client)
+				if err != nil {
+					continue
+				}
+				v := getHeaderValue(r.Headers, "vary")
+				if v != baselineVary && v != "" {
+					consistent++
+				}
+			}
+			if consistent >= 2 {
+				return true // Signal C: suspected
+			}
+		}
+	}
+	return false
+}
+
+// validateHopByHop implements Rule #4: Hop-by-hop structural validation
+func (o *Orchestrator) validateHopByHop(diff *DiffResult) bool {
+	// Must show measurable structural difference after volatile normalization:
+	// Content-Length changes by more than 10%
+	if diff.SizeChangeRatio > 1.1 || diff.SizeChangeRatio < 0.9 {
+		return true
+	}
+	// Content-Encoding appears or disappears
+	for _, h := range diff.HeadersAdded {
+		if strings.EqualFold(h, "content-encoding") {
+			return true
+		}
+	}
+	for _, h := range diff.HeadersRemoved {
+		if strings.EqualFold(h, "content-encoding") {
+			return true
+		}
+	}
+	// A non-volatile security header appears or disappears
+	securityHeaders := map[string]bool{
+		"strict-transport-security": true, "content-security-policy": true,
+		"x-frame-options": true, "x-content-type-options": true,
+		"referrer-policy": true, "permissions-policy": true,
+	}
+	for _, h := range diff.HeadersAdded {
+		if securityHeaders[strings.ToLower(h)] {
+			return true
+		}
+	}
+	for _, h := range diff.HeadersRemoved {
+		if securityHeaders[strings.ToLower(h)] {
+			return true
+		}
+	}
+	// Status changed significantly
+	if diff.StatusChanged {
+		return true
+	}
+	// Header reflection
+	if diff.HeaderReflection {
+		return true
+	}
+	return false
+}
+
+// isRangeHeader checks if a mutation is a Range header test
+func isRangeHeader(mutation Mutation) bool {
+	return strings.EqualFold(mutation.Header, "Range")
+}
+
+// validateRange implements Rule #5: Range header validation
+func (o *Orchestrator) validateRange(mutation Mutation, resp *ResponseContext) bool {
+	// Must change from 200 to 206 AND content-type to multipart/byteranges
+	if o.baseline.StatusCode != 200 || resp.StatusCode != 206 {
+		return false
+	}
+	ct := getHeaderValue(resp.Headers, "content-type")
+	if !strings.Contains(strings.ToLower(ct), "multipart/byteranges") {
+		return false
+	}
+	// Confirm with 3 runs
+	consistent := 0
+	for i := 0; i < 3; i++ {
+		ctx := o.buildMutationRequest(mutation)
+		r, err := ctx.Execute(o.client)
+		if err != nil {
+			continue
+		}
+		if r.StatusCode == 206 {
+			rct := getHeaderValue(r.Headers, "content-type")
+			if strings.Contains(strings.ToLower(rct), "multipart/byteranges") {
+				consistent++
+			}
+		}
+	}
+	return consistent >= 3
+}
+
+// generateCurlCommand builds a reproducible curl command for a finding (Rule #9)
+func (o *Orchestrator) generateCurlCommand(mutation Mutation) string {
+	parts := []string{"curl", "-sk"}
+	if o.config.Method != "GET" {
+		parts = append(parts, "-X", o.config.Method)
+	}
+
+	// Add custom headers
+	for k, v := range o.config.Headers {
+		parts = append(parts, "-H", fmt.Sprintf("'%s: %s'", k, v))
+	}
+
+	// Add mutation header(s)
+	if strings.Contains(mutation.Header, " + ") {
+		pairs := strings.Split(mutation.Value, " | ")
+		for _, pair := range pairs {
+			colonIdx := strings.Index(pair, ": ")
+			if colonIdx > 0 {
+				parts = append(parts, "-H", fmt.Sprintf("'%s'", pair))
+			}
+		}
+	} else {
+		parts = append(parts, "-H", fmt.Sprintf("'%s: %s'", mutation.Header, mutation.Value))
+	}
+
+	// Add body
+	if len(o.config.Body) > 0 {
+		parts = append(parts, "-d", fmt.Sprintf("'%s'", string(o.config.Body)))
+	}
+
+	parts = append(parts, fmt.Sprintf("'%s'", o.config.URL))
+	return strings.Join(parts, " ")
+}
+
+// checkScope checks if a finding matches out-of-scope rules (Rule #6)
+func (o *Orchestrator) checkScope(finding Finding) string {
+	impactLower := strings.ToLower(finding.Impact)
+	categoryLower := strings.ToLower(finding.Category)
+
+	for _, rule := range o.config.ScopeRules {
+		ruleLower := strings.ToLower(strings.TrimSpace(rule))
+		if ruleLower == "" || strings.HasPrefix(ruleLower, "#") {
+			continue
+		}
+
+		// Common out-of-scope categories
+		if strings.Contains(ruleLower, "missing security header") || strings.Contains(ruleLower, "missing header") {
+			if categoryLower == "security" && strings.Contains(impactLower, "missing") {
+				return "Out of scope: missing security headers"
+			}
+		}
+		if strings.Contains(ruleLower, "rate limit") {
+			if categoryLower == "ratelimit" {
+				return "Out of scope: rate limiting"
+			}
+		}
+		if strings.Contains(ruleLower, "clickjack") {
+			if strings.Contains(impactLower, "clickjack") || strings.Contains(impactLower, "x-frame") {
+				return "Out of scope: clickjacking"
+			}
+		}
+		if strings.Contains(ruleLower, "best practice") {
+			if finding.Severity == "Info" || finding.Severity == "Low" {
+				if !finding.Verified && finding.ConfidenceScore < 0.6 {
+					return "Out of scope: best practice violation"
+				}
+			}
+		}
+		// Generic pattern match
+		if strings.Contains(impactLower, ruleLower) || strings.Contains(categoryLower, ruleLower) {
+			return "Out of scope: matches rule '" + rule + "'"
+		}
+	}
+	return ""
 }
 
 // runMutationBatch executes a batch of mutations concurrently
@@ -785,27 +1051,19 @@ func (o *Orchestrator) createFinding(mutation Mutation, diff *DiffResult, resp *
 
 	severity, cvss, cwe, confidence := calculateSeverityStrict(mutation, diff, o.baseline, resp, o.profile)
 
-	// Rule #4: Evidence-based confidence labeling
-	confidenceLabel := "Low"
+	// Rule #7: Evidence-based confidence labeling
 	if diff.HeaderReflection && strings.Contains(diff.ReflectedValue, "body:") {
 		// Literal reflection in body → always CONFIRMED
-		confidenceLabel = "Confirmed"
-		if confidence < 0.8 {
-			confidence = 0.8
+		if confidence < 0.85 {
+			confidence = 0.85
 		}
 	} else if diff.ContentTypeChanged {
 		// Response Content-Type hijacked → CONFIRMED
-		confidenceLabel = "Confirmed"
-		if confidence < 0.8 {
-			confidence = 0.8
+		if confidence < 0.85 {
+			confidence = 0.85
 		}
-	} else if confidence >= 0.8 {
-		confidenceLabel = "Confirmed"
-	} else if confidence >= 0.6 {
-		confidenceLabel = "High"
-	} else if confidence >= 0.4 {
-		confidenceLabel = "Medium"
 	}
+	confidenceLabel := confidenceLabelV2(confidence)
 
 	remediation := getRemediation(mutation.Category, diff)
 
@@ -994,56 +1252,90 @@ func getRemediation(category string, diff *DiffResult) string {
 	return "Review and harden the application's header handling."
 }
 
-func (o *Orchestrator) verifyFinding(finding *Finding, mutation Mutation) bool {
-	ctx := NewRequestContext(o.config.URL, o.config.Method)
-	for k, v := range o.config.Headers {
-		ctx.AddHeader(k, v)
-	}
-	if len(o.config.Body) > 0 {
-		ctx.SetBody(o.config.Body, o.config.ContentType)
-	}
+// verifyFindingStrict implements Rule #8: verification with 3 attempts
+// Returns (verified, attempts). If all 3 fail → caller discards as FP.
+func (o *Orchestrator) verifyFindingStrict(finding *Finding, mutation Mutation) (bool, int) {
+	successes := 0
+	attempts := 3
 
-	// Handle chained mutations
-	if strings.Contains(mutation.Header, " + ") {
-		pairs := strings.Split(mutation.Value, " | ")
-		for _, pair := range pairs {
-			colonIdx := strings.Index(pair, ": ")
-			if colonIdx > 0 {
-				ctx.AddHeader(pair[:colonIdx], pair[colonIdx+2:])
+	for i := 0; i < attempts; i++ {
+		ctx := o.buildMutationRequest(mutation)
+		resp, err := ctx.Execute(o.client)
+		if err != nil {
+			continue
+		}
+
+		diff := CalculateDiffWithProfile(o.baseline, resp, o.profile)
+
+		reflected, reflectLocation := CheckHeaderReflection(mutation, resp)
+		if reflected {
+			diff.HeaderReflection = true
+			diff.ReflectedValue = reflectLocation
+		}
+
+		// Use similarity engine for body changes
+		if diff.BodyHashChanged {
+			sim := CalculateSimilarityWithProfile(o.baseline, resp, o.profile)
+			if sim.NormalizedBodySimilarity > 0.95 && sim.StructuralSimilarity > 0.95 {
+				diff.BodyHashChanged = false
 			}
 		}
-	} else {
-		ctx.AddHeader(mutation.Header, mutation.Value)
+
+		if diff.IsSignificant() && !isVolatileOnly(diff) && !diff.IsCookieOnly() {
+			successes++
+		}
+
+		if i < attempts-1 {
+			time.Sleep(200 * time.Millisecond)
+		}
 	}
 
-	resp, err := ctx.Execute(o.client)
-	if err != nil {
-		return false
+	if successes >= 2 {
+		// Reproduced in at least 2/3 attempts → CONFIRMED
+		finding.Verified = true
+		finding.Reproducible = true
+		finding.VerifiedAt = time.Now()
+		finding.Evidence["verified"] = fmt.Sprintf("CONFIRMED (%d/%d runs)", successes, attempts)
+
+		// Boost confidence: reproduced findings get HIGH or CONFIRMED
+		finding.ConfidenceScore += 0.15
+		if finding.ConfidenceScore > 1.0 {
+			finding.ConfidenceScore = 1.0
+		}
+		finding.Confidence = confidenceLabelV2(finding.ConfidenceScore)
+		return true, attempts
 	}
 
-	diff := CalculateDiffWithProfile(o.baseline, resp, o.profile)
-
-	reflected, reflectLocation := CheckHeaderReflection(mutation, resp)
-	if reflected {
-		diff.HeaderReflection = true
-		diff.ReflectedValue = reflectLocation
+	if successes == 1 {
+		// Only 1/3 → downgrade confidence by 2 levels
+		finding.ConfidenceScore -= 0.3
+		if finding.ConfidenceScore < 0.2 {
+			finding.ConfidenceScore = 0.2
+		}
+		finding.Confidence = confidenceLabelV2(finding.ConfidenceScore)
+		finding.Evidence["verified"] = fmt.Sprintf("INCONSISTENT (%d/%d runs)", successes, attempts)
+		return false, attempts
 	}
 
-	if !diff.IsSignificant() {
-		return false
+	// 0/3 → FALSE POSITIVE — caller will discard
+	return false, attempts
+}
+
+// confidenceLabelV2 implements Rule #7 confidence scoring
+func confidenceLabelV2(score float64) string {
+	if score >= 0.85 {
+		return "Confirmed"
 	}
-
-	finding.Verified = true
-	finding.VerifiedAt = time.Now()
-	finding.Evidence["verified"] = "CONFIRMED"
-
-	finding.ConfidenceScore += 0.15
-	if finding.ConfidenceScore > 1.0 {
-		finding.ConfidenceScore = 1.0
+	if score >= 0.6 {
+		return "High"
 	}
-	finding.Confidence = confidenceLabel(finding.ConfidenceScore)
-
-	return true
+	if score >= 0.4 {
+		return "Medium"
+	}
+	if score >= 0.2 {
+		return "Low"
+	}
+	return "False Positive"
 }
 
 func (o *Orchestrator) prioritizeMutations(mutations []Mutation) []Mutation {

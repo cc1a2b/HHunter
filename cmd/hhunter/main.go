@@ -113,6 +113,12 @@ var (
 	reportFile string
 	sarifFile  string
 
+	// False-positive controls (v0.2.2)
+	timingOnly bool
+	showAll    bool
+	verbose    bool
+	scopeFile  string
+
 	// UI
 	showHelp bool
 	update   bool
@@ -225,6 +231,12 @@ func main() {
 	flag.Int64Var(&matchSize, "match-size", 0, "Match response size (bytes)")
 	flag.Int64Var(&filterSize, "filter-size", 0, "Filter (exclude) response size (bytes)")
 
+	// False-positive controls
+	flag.BoolVar(&timingOnly, "timing-only", false, "Show timing-only findings (research mode)")
+	flag.BoolVar(&showAll, "all", false, "Show ALL findings including LOW and timing-only")
+	flag.BoolVar(&verbose, "verbose", false, "Show normalized diff details for each finding")
+	flag.StringVar(&scopeFile, "scope", "", "Scope file with out-of-scope rules (one per line)")
+
 	// Report
 	flag.StringVar(&reportFile, "report", "", "Generate HTML report (filename.html)")
 	flag.StringVar(&sarifFile, "sarif", "", "Generate SARIF report for CI/CD (filename.sarif)")
@@ -327,6 +339,23 @@ func main() {
 	// Parse match/filter status codes
 	matchStatusCodes := parseStatusCodes(matchStatus)
 	filterStatusCodes := parseStatusCodes(filterStatus)
+
+	// Parse scope file
+	var scopeRules []string
+	if scopeFile != "" {
+		scopeData, err := os.ReadFile(scopeFile)
+		if err != nil {
+			fmt.Printf("\033[0;31m[ERROR]\033[0m Failed to read scope file: %v\n", err)
+			os.Exit(1)
+		}
+		for _, line := range strings.Split(string(scopeData), "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" && !strings.HasPrefix(line, "#") {
+				scopeRules = append(scopeRules, line)
+			}
+		}
+		fmt.Printf("\033[0;34m[SCOPE]\033[0m Loaded %d scope rules from %s\n", len(scopeRules), scopeFile)
+	}
 
 	// Start OOB server if enabled
 	var oobServer *engine.OOBServer
@@ -438,6 +467,10 @@ func main() {
 			FilterStatus:    filterStatusCodes,
 			MatchSize:       matchSize,
 			FilterSize:      filterSize,
+			TimingOnly:      timingOnly,
+			ShowAll:         showAll,
+			Verbose:         verbose,
+			ScopeRules:      scopeRules,
 		}
 
 		orchestrator := engine.NewOrchestrator(config)
@@ -736,6 +769,13 @@ func printHelp() {
 	fmt.Println("  --stealth                     Stealth mode (slower, more evasive)")
 	fmt.Println()
 
+	fmt.Println("False-Positive Controls:")
+	fmt.Println("  --timing-only                 Show timing-only findings (research mode)")
+	fmt.Println("  --all                         Show ALL findings (including LOW and timing-only)")
+	fmt.Println("  --verbose                     Show normalized diff for each finding")
+	fmt.Println("  --scope FILE                  Scope file with out-of-scope rules (one per line)")
+	fmt.Println()
+
 	fmt.Println("OOB (Out-of-Band) Detection:")
 	fmt.Println("  --oob                         Enable OOB callback server for blind vulns")
 	fmt.Println("  --oob-addr ADDR               OOB listen address (default: 0.0.0.0:8888)")
@@ -816,7 +856,20 @@ func printFindings(result *engine.ScanResult) {
 		fmt.Printf("  \033[0;36mConfidence\033[0m:  %s (%.0f%%)\n", finding.Confidence, finding.ConfidenceScore*100)
 
 		if finding.Verified {
-			fmt.Printf("  \033[0;32mVerified\033[0m:    \033[1;32mCONFIRMED\033[0m\n")
+			verified := "CONFIRMED"
+			if finding.Reproducible {
+				verified = "CONFIRMED (reproducible)"
+			}
+			fmt.Printf("  \033[0;32mVerified\033[0m:    \033[1;32m%s\033[0m\n", verified)
+		}
+		if finding.VerifyAttempts > 0 && !finding.Verified {
+			fmt.Printf("  \033[0;33mVerified\033[0m:    \033[0;33mINCONSISTENT (%d attempts)\033[0m\n", finding.VerifyAttempts)
+		}
+		if finding.TimingOnly {
+			fmt.Printf("  \033[0;33mNote\033[0m:        \033[0;33mTiming-only finding (no structural signal)\033[0m\n")
+		}
+		if finding.ScopeNote != "" {
+			fmt.Printf("  \033[0;33mScope\033[0m:       \033[0;33m%s\033[0m\n", finding.ScopeNote)
 		}
 		if finding.Evidence["oob_confirmed"] == "true" {
 			fmt.Printf("  \033[0;35mOOB\033[0m:         \033[1;35mBLIND VULN CONFIRMED\033[0m\n")
@@ -843,6 +896,10 @@ func printFindings(result *engine.ScanResult) {
 				}
 				fmt.Printf("    - %s: %s\n", k, truncateStr(v, 100))
 			}
+		}
+
+		if finding.CurlCommand != "" {
+			fmt.Printf("  \033[0;36mReproduce\033[0m:\n    \033[0;32m%s\033[0m\n", finding.CurlCommand)
 		}
 
 		if finding.Remediation != "" {
