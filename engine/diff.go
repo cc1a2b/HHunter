@@ -392,11 +392,12 @@ func CalculateDiffWithProfile(baseline, mutated *ResponseContext, profile *Basel
 // CheckHeaderReflection performs context-aware reflection detection.
 // Returns (reflected, location, context) where context describes if
 // the reflection is in a dangerous position.
-func CheckHeaderReflection(mutation Mutation, resp *ResponseContext) (bool, string) {
-	return checkHeaderReflectionStrict(mutation, resp)
+// baselineBody is used to exclude values already present before the probe.
+func CheckHeaderReflection(mutation Mutation, resp *ResponseContext, baselineBody string) (bool, string) {
+	return checkHeaderReflectionStrict(mutation, resp, baselineBody)
 }
 
-func checkHeaderReflectionStrict(mutation Mutation, resp *ResponseContext) (bool, string) {
+func checkHeaderReflectionStrict(mutation Mutation, resp *ResponseContext, baselineBody string) (bool, string) {
 	value := mutation.Value
 
 	// Minimum 8 characters to avoid matching common words like "true", "null", "test", "admin"
@@ -408,7 +409,8 @@ func checkHeaderReflectionStrict(mutation Mutation, resp *ResponseContext) (bool
 	skipValues := []string{
 		"true", "false", "null", "undefined", "admin", "test",
 		"localhost", "127.0.0.1", "application/json", "application/xml",
-		"text/html", "text/plain", "utf-8", "gzip", "deflate",
+		"text/html", "text/plain", "text/css", "text/javascript",
+		"utf-8", "gzip", "deflate", "document", "origin",
 		"keep-alive", "close", "no-cache", "no-store",
 		"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH",
 		// CDN / server identifiers that naturally appear in response headers
@@ -425,8 +427,13 @@ func checkHeaderReflectionStrict(mutation Mutation, resp *ResponseContext) (bool
 
 	body := string(resp.Body)
 
-	// Check body reflection with context analysis
+	// Check body reflection with context analysis.
+	// Critical: exclude values already present in the baseline body — these are
+	// ambient strings (e.g. "text/javascript" in <script type=...>), not reflections.
 	if strings.Contains(body, value) {
+		if strings.Contains(baselineBody, value) {
+			return false, ""
+		}
 		ctx := analyzeReflectionContext(body, value)
 		if ctx != "safe" {
 			return true, "body:" + ctx

@@ -434,9 +434,15 @@ func (o *Orchestrator) testMutation(mutation Mutation, current, total int) {
 		return
 	}
 
+	// Bug 2 fix: discard responses where the server explicitly rejected the header.
+	// A 4xx rejection (417, 431, etc.) from a 2xx baseline is server behavior, not exploitation.
+	if isServerRejection(o.baseline.StatusCode, resp.StatusCode) {
+		return
+	}
+
 	diff := CalculateDiffWithProfile(o.baseline, resp, o.profile)
 
-	reflected, reflectLocation := CheckHeaderReflection(mutation, resp)
+	reflected, reflectLocation := CheckHeaderReflection(mutation, resp, string(o.baseline.Body))
 	if reflected {
 		diff.HeaderReflection = true
 		diff.ReflectedValue = reflectLocation
@@ -480,8 +486,8 @@ func (o *Orchestrator) testMutation(mutation Mutation, current, total int) {
 			}
 		}
 
-		// Rule #5: Range header validation
-		if mutation.Category == "Encoding" && isRangeHeader(mutation) {
+		// Rule #5: Range header validation — applies to ALL categories when header is Range
+		if isRangeHeader(mutation) {
 			if !o.validateRange(mutation, resp) {
 				return
 			}
@@ -587,8 +593,10 @@ func (o *Orchestrator) buildMutationRequest(mutation Mutation) *RequestContext {
 
 // validateContentType implements Rule #3: Content-Type injection validation
 func (o *Orchestrator) validateContentType(mutation Mutation, diff *DiffResult, resp *ResponseContext) bool {
-	// Signal A: injected value appears verbatim in response body
-	if strings.Contains(string(resp.Body), mutation.Value) {
+	// Signal A: injected value appears verbatim in response body AND was not
+	// already present in the baseline (e.g. "text/javascript" in existing <script> tags)
+	if strings.Contains(string(resp.Body), mutation.Value) &&
+		!strings.Contains(string(o.baseline.Body), mutation.Value) {
 		return true
 	}
 	// Signal B: response Content-Type header changed to match what we sent
@@ -675,7 +683,10 @@ func isRangeHeader(mutation Mutation) bool {
 	return strings.EqualFold(mutation.Header, "Range")
 }
 
-// validateRange implements Rule #5: Range header validation
+// validateRange implements Rule #5: Range header validation.
+// RFC 7233 multi-range support is normal server behavior. To be reportable,
+// there must be evidence of a shared caching layer that could serve the
+// partial response to other users (cache poisoning prerequisite).
 func (o *Orchestrator) validateRange(mutation Mutation, resp *ResponseContext) bool {
 	// Must change from 200 to 206 AND content-type to multipart/byteranges
 	if o.baseline.StatusCode != 200 || resp.StatusCode != 206 {
@@ -700,7 +711,50 @@ func (o *Orchestrator) validateRange(mutation Mutation, resp *ResponseContext) b
 			}
 		}
 	}
-	return consistent >= 3
+	if consistent < 3 {
+		return false
+	}
+	// Require evidence of a shared cache — without it, 206 is normal RFC 7233
+	// behavior and there is no exploitable cache-poisoning vector.
+	return hasCachingIndicators(resp)
+}
+
+// hasCachingIndicators returns true when response headers indicate a shared
+// caching layer is present between the client and origin.
+func hasCachingIndicators(resp *ResponseContext) bool {
+	cacheHeaders := []string{
+		"age", "x-cache", "x-cache-hits", "cf-cache-status",
+		"x-varnish", "x-served-by", "x-fastly-request-id",
+		"x-cache-lookup", "x-drupal-cache", "x-proxy-cache",
+	}
+	for _, h := range cacheHeaders {
+		if v := getHeaderValue(resp.Headers, h); v != "" {
+			return true
+		}
+	}
+	// "Via" header with a proxy identifier also signals a cache
+	via := getHeaderValue(resp.Headers, "via")
+	if via != "" {
+		return true
+	}
+	return false
+}
+
+// isServerRejection returns true when a probe response represents the server
+// explicitly rejecting the injected header rather than processing it.
+// These are never exploitable and must be discarded immediately.
+func isServerRejection(baselineStatus, probeStatus int) bool {
+	// Only meaningful when the baseline was a successful (2xx) response
+	if baselineStatus < 200 || baselineStatus >= 300 {
+		return false
+	}
+	switch probeStatus {
+	case 417: // Expectation Failed — server rejected the Expect header per RFC 7231
+		return true
+	case 431: // Request Header Fields Too Large — header rejected at transport level
+		return true
+	}
+	return false
 }
 
 // generateCurlCommand builds a reproducible curl command for a finding (Rule #9)
@@ -1267,7 +1321,7 @@ func (o *Orchestrator) verifyFindingStrict(finding *Finding, mutation Mutation) 
 
 		diff := CalculateDiffWithProfile(o.baseline, resp, o.profile)
 
-		reflected, reflectLocation := CheckHeaderReflection(mutation, resp)
+		reflected, reflectLocation := CheckHeaderReflection(mutation, resp, string(o.baseline.Body))
 		if reflected {
 			diff.HeaderReflection = true
 			diff.ReflectedValue = reflectLocation
