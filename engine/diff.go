@@ -390,14 +390,21 @@ func CalculateDiffWithProfile(baseline, mutated *ResponseContext, profile *Basel
 }
 
 // CheckHeaderReflection performs context-aware reflection detection.
-// Returns (reflected, location, context) where context describes if
-// the reflection is in a dangerous position.
-// baselineBody is used to exclude values already present before the probe.
-func CheckHeaderReflection(mutation Mutation, resp *ResponseContext, baselineBody string) (bool, string) {
-	return checkHeaderReflectionStrict(mutation, resp, baselineBody)
+// Returns (reflected, location) where location describes whether the value
+// landed in a dangerous position. The baseline response is used to exclude
+// values that were already present before the probe — those represent
+// ambient server output, not reflection of our input.
+func CheckHeaderReflection(mutation Mutation, resp *ResponseContext, baseline *ResponseContext) (bool, string) {
+	return checkHeaderReflectionStrict(mutation, resp, baseline)
 }
 
-func checkHeaderReflectionStrict(mutation Mutation, resp *ResponseContext, baselineBody string) (bool, string) {
+func checkHeaderReflectionStrict(mutation Mutation, resp *ResponseContext, baseline *ResponseContext) (bool, string) {
+	var baselineBody string
+	var baselineHeaders map[string][]string
+	if baseline != nil {
+		baselineBody = string(baseline.Body)
+		baselineHeaders = baseline.Headers
+	}
 	value := mutation.Value
 
 	// Minimum 8 characters to avoid matching common words like "true", "null", "test", "admin"
@@ -472,6 +479,13 @@ func checkHeaderReflectionStrict(mutation Mutation, resp *ResponseContext, basel
 			strings.HasPrefix(hlower, "x-azure-") || strings.HasPrefix(hlower, "x-envoy-") {
 			continue
 		}
+		// Critical: a value already present in the same baseline header is
+		// ambient server output (e.g. Vary: Accept-Encoding), not reflection
+		// of our input. This eliminates false positives where the mutation
+		// value happens to match a normal response-header value.
+		if baselineExact, baselineSubstr := headerValuePresentInBaseline(baselineHeaders, headerName, value); baselineExact || baselineSubstr {
+			continue
+		}
 		for _, v := range vals {
 			if v == value {
 				return true, "header:exact"
@@ -480,6 +494,29 @@ func checkHeaderReflectionStrict(mutation Mutation, resp *ResponseContext, basel
 	}
 
 	return false, ""
+}
+
+// headerValuePresentInBaseline reports whether the given value already
+// appears (exactly or as a substring of any value) in the baseline copy of
+// the named header. Header names compare case-insensitively.
+func headerValuePresentInBaseline(baselineHeaders map[string][]string, headerName, value string) (exact bool, substring bool) {
+	if baselineHeaders == nil {
+		return false, false
+	}
+	for k, vals := range baselineHeaders {
+		if !strings.EqualFold(k, headerName) {
+			continue
+		}
+		for _, v := range vals {
+			if v == value {
+				return true, true
+			}
+			if strings.Contains(v, value) {
+				substring = true
+			}
+		}
+	}
+	return false, substring
 }
 
 // analyzeReflectionContext determines the context where a value is reflected

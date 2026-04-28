@@ -137,6 +137,13 @@ type Orchestrator struct {
 	mu               sync.Mutex
 	progress         int64 // atomic counter for progress display
 	totalMuts        int64 // total mutations to test
+
+	// Rejection-fingerprint clustering: detects WAF/CDN/proxy block pages that
+	// collapse many distinct payloads into the same response shape.
+	rejectionFingerprints map[responseFingerprint]bool
+	fingerprintStats      map[responseFingerprint]*fingerprintStats
+	fpMu                  sync.Mutex
+	rejectionAnnounced    bool
 }
 
 func NewOrchestrator(config *ScanConfig) *Orchestrator {
@@ -169,10 +176,12 @@ func NewOrchestrator(config *ScanConfig) *Orchestrator {
 	}
 
 	return &Orchestrator{
-		config:           config,
-		client:           client,
-		findings:         []Finding{},
-		confirmedHeaders: make(map[string]bool),
+		config:                config,
+		client:                client,
+		findings:              []Finding{},
+		confirmedHeaders:      make(map[string]bool),
+		rejectionFingerprints: make(map[responseFingerprint]bool),
+		fingerprintStats:      make(map[responseFingerprint]*fingerprintStats),
 	}
 }
 
@@ -221,6 +230,10 @@ func (o *Orchestrator) Scan() (*ScanResult, error) {
 		fmt.Printf(" \033[0;33m[HIGH JITTER: %.0fms]\033[0m", o.profile.TimingStdDev)
 	}
 	fmt.Println()
+
+	// WAF / CDN / proxy calibration: identify rejection fingerprints upfront
+	// so collapsed block pages cannot be mistaken for findings.
+	o.calibrateRejection()
 
 	// Security Audit
 	var audit *SecurityAudit
@@ -434,15 +447,24 @@ func (o *Orchestrator) testMutation(mutation Mutation, current, total int) {
 		return
 	}
 
-	// Bug 2 fix: discard responses where the server explicitly rejected the header.
-	// A 4xx rejection (417, 431, etc.) from a 2xx baseline is server behavior, not exploitation.
-	if isServerRejection(o.baseline.StatusCode, resp.StatusCode) {
+	// Discard responses representing server / WAF / CDN rejection rather than
+	// application output. Combines: explicit 4xx/5xx rejection codes, known
+	// WAF block-page body signatures, and fingerprint clustering.
+	if o.isRejectionResponse(resp) {
+		o.recordFingerprint(mutation, resp)
+		return
+	}
+
+	// Track this response shape; if it matches a confirmed rejection cluster
+	// we discard immediately even when the status alone wouldn't trigger.
+	if o.recordFingerprint(mutation, resp) {
+		o.announceRejectionPattern()
 		return
 	}
 
 	diff := CalculateDiffWithProfile(o.baseline, resp, o.profile)
 
-	reflected, reflectLocation := CheckHeaderReflection(mutation, resp, string(o.baseline.Body))
+	reflected, reflectLocation := CheckHeaderReflection(mutation, resp, o.baseline)
 	if reflected {
 		diff.HeaderReflection = true
 		diff.ReflectedValue = reflectLocation
@@ -740,21 +762,252 @@ func hasCachingIndicators(resp *ResponseContext) bool {
 	return false
 }
 
-// isServerRejection returns true when a probe response represents the server
-// explicitly rejecting the injected header rather than processing it.
-// These are never exploitable and must be discarded immediately.
+// isServerRejection returns true when a probe response represents the server,
+// proxy, CDN, or WAF explicitly rejecting the request rather than processing
+// the injected header. These are never exploitable and must be discarded.
+//
+// From a 2xx baseline, any of these status codes mean the request was rejected
+// at the perimeter, not that the application processed our payload:
+//   - 4xx codes the application could not have produced from the same path
+//     (the baseline already proved the path returns 2xx for normal traffic).
+//   - 5xx codes from upstream gateways/CDNs indicating infrastructure failure.
 func isServerRejection(baselineStatus, probeStatus int) bool {
-	// Only meaningful when the baseline was a successful (2xx) response
 	if baselineStatus < 200 || baselineStatus >= 300 {
 		return false
 	}
 	switch probeStatus {
-	case 417: // Expectation Failed — server rejected the Expect header per RFC 7231
-		return true
-	case 431: // Request Header Fields Too Large — header rejected at transport level
+	case 400, // Bad Request — server could not parse the header
+		403,  // Forbidden — WAF/policy block (Cloudflare, Imperva, AWS WAF, etc.)
+		405,  // Method Not Allowed — Aliyun/CDN block response
+		406,  // Not Acceptable — content negotiation rejection
+		411,  // Length Required
+		412,  // Precondition Failed
+		413,  // Payload Too Large — header size rejection
+		414,  // URI Too Long
+		415,  // Unsupported Media Type
+		417,  // Expectation Failed — Expect header rejected per RFC 7231
+		418,  // I'm a teapot (some WAFs use this)
+		421,  // Misdirected Request
+		425,  // Too Early
+		428,  // Precondition Required
+		429,  // Too Many Requests — rate limit
+		431,  // Request Header Fields Too Large
+		451,  // Unavailable For Legal Reasons — geo/policy block
+		494,  // Request Header Too Large (nginx)
+		495,  // SSL Certificate Error (nginx)
+		496,  // SSL Certificate Required (nginx)
+		497,  // HTTP Request Sent to HTTPS Port (nginx)
+		499,  // Client Closed Request (nginx)
+		501,  // Not Implemented — method/feature rejected
+		502,  // Bad Gateway — upstream rejected request
+		503,  // Service Unavailable — overload / WAF block
+		504,  // Gateway Timeout
+		520, 521, 522, 523, 524, 525, 526, 527, 530: // Cloudflare custom errors
 		return true
 	}
 	return false
+}
+
+// looksLikeWAFBlockPage returns true if the response body or headers contain
+// signatures of a known WAF / CDN / proxy block page. These are returned by
+// the perimeter, not the application, and never represent exploitation.
+func looksLikeWAFBlockPage(resp *ResponseContext) bool {
+	if resp == nil {
+		return false
+	}
+	// Only treat as a block when the status indicates rejection. A 200 response
+	// containing the word "blocked" in normal application copy must not match.
+	if resp.StatusCode > 0 && resp.StatusCode < 400 {
+		return false
+	}
+	body := strings.ToLower(string(resp.Body))
+	if len(body) > 0 {
+		signatures := []string{
+			"your request has been blocked",
+			"request has been blocked",
+			"the request has been blocked",
+			"您的访问被阻断",
+			"由于您访问的url有可能对网站造成安全威胁",
+			"sorry, your request has been blocked",
+			"may cause potential threats to the server",
+			"potential threats to the server's security",
+			"the requested url was rejected",
+			"please consult with your administrator",
+			"support id:",
+			"access denied",
+			"attention required",
+			"cloudflare ray id",
+			"cf-browser-verification",
+			"<awswafaction>",
+			"aws waf",
+			"incapsula incident id",
+			"_incap_",
+			"akamai reference",
+			"reference&#32;&#35;",
+			"errors.aliyun.com",
+			"modsecurity",
+			"mod_security",
+			"sucuri website firewall",
+			"barracuda",
+			"fortiweb",
+			"denyall",
+			"conditionblocked",
+			"blocked by waf",
+			"your ip has been blocked",
+			"your request looks similar to malicious",
+			"this request has been blocked",
+			"web application firewall",
+			"the page you are looking for is temporarily unavailable",
+			"requested url could not be retrieved",
+		}
+		for _, sig := range signatures {
+			if strings.Contains(body, sig) {
+				return true
+			}
+		}
+	}
+	for k := range resp.Headers {
+		kl := strings.ToLower(k)
+		if strings.Contains(kl, "waf") || strings.Contains(kl, "firewall") ||
+			strings.Contains(kl, "blocked") || strings.Contains(kl, "incapsula") ||
+			strings.Contains(kl, "x-sucuri") || strings.Contains(kl, "x-iinfo") {
+			return true
+		}
+	}
+	return false
+}
+
+// responseFingerprint identifies near-duplicate response shapes across probes.
+// When many distinct payloads collapse to the same fingerprint, the perimeter
+// is returning a generic block page instead of letting the application respond.
+type responseFingerprint struct {
+	Status     int
+	SizeBucket int // body length in 256-byte buckets
+}
+
+func makeFingerprint(resp *ResponseContext) responseFingerprint {
+	return responseFingerprint{
+		Status:     resp.StatusCode,
+		SizeBucket: len(resp.Body) / 256,
+	}
+}
+
+type fingerprintStats struct {
+	Count      int
+	Categories map[string]bool
+	Headers    map[string]bool
+}
+
+// recordFingerprint tracks a probe response shape and promotes it to a
+// confirmed rejection pattern once the same shape appears for many distinct
+// mutations across multiple categories or unique headers. Returns true when
+// the response matches a confirmed rejection pattern.
+func (o *Orchestrator) recordFingerprint(mutation Mutation, resp *ResponseContext) bool {
+	if resp == nil {
+		return false
+	}
+	// Responses that match the baseline status with comparable body size are
+	// not rejection candidates and would only pollute the fingerprint table.
+	if resp.StatusCode == o.baseline.StatusCode {
+		baseSize := len(o.baseline.Body)
+		if baseSize > 0 {
+			ratio := float64(len(resp.Body)) / float64(baseSize)
+			if ratio > 0.7 && ratio < 1.3 {
+				return false
+			}
+		}
+	}
+
+	fp := makeFingerprint(resp)
+
+	o.fpMu.Lock()
+	defer o.fpMu.Unlock()
+
+	if o.rejectionFingerprints[fp] {
+		return true
+	}
+
+	stats, ok := o.fingerprintStats[fp]
+	if !ok {
+		stats = &fingerprintStats{
+			Categories: make(map[string]bool),
+			Headers:    make(map[string]bool),
+		}
+		o.fingerprintStats[fp] = stats
+	}
+	stats.Count++
+	stats.Categories[mutation.Category] = true
+	stats.Headers[strings.ToLower(mutation.Header)] = true
+
+	// Promote to confirmed rejection when ≥5 hits and the cluster spans
+	// either ≥2 attack categories or ≥3 distinct header names — strong
+	// evidence the perimeter is collapsing distinct payloads to one page.
+	if stats.Count >= 5 && (len(stats.Categories) >= 2 || len(stats.Headers) >= 3) {
+		o.rejectionFingerprints[fp] = true
+		return true
+	}
+	return false
+}
+
+// announceRejectionPattern emits a one-time notice that the perimeter is
+// returning a generic block page for many distinct payloads. Helpful so the
+// operator understands why the finding count drops to zero.
+func (o *Orchestrator) announceRejectionPattern() {
+	o.fpMu.Lock()
+	already := o.rejectionAnnounced
+	o.rejectionAnnounced = true
+	o.fpMu.Unlock()
+	if already {
+		return
+	}
+	fmt.Println("\033[0;33m[BLOCK]\033[0m Perimeter is collapsing distinct payloads to a single block page — discarding matched responses as WAF rejections")
+}
+
+// calibrateRejection sends deliberately egregious probes against a few
+// distinct headers and records the response fingerprints. Anything matching
+// these fingerprints during the main scan is treated as a WAF/CDN rejection.
+func (o *Orchestrator) calibrateRejection() {
+	probes := []Mutation{
+		{Header: "X-Calibration-Probe-1", Value: "<script>alert(1)</script>", Category: "_calibration"},
+		{Header: "X-Calibration-Probe-2", Value: "${jndi:ldap://example.invalid/a}", Category: "_calibration"},
+		{Header: "X-Calibration-Probe-3", Value: "' OR '1'='1' --", Category: "_calibration"},
+		{Header: "X-Calibration-Probe-4", Value: "../../../../etc/passwd", Category: "_calibration"},
+	}
+	hits := 0
+	for _, m := range probes {
+		ctx := o.buildMutationRequest(m)
+		resp, err := ctx.Execute(o.client)
+		if err != nil || resp == nil {
+			continue
+		}
+		if isServerRejection(o.baseline.StatusCode, resp.StatusCode) || looksLikeWAFBlockPage(resp) {
+			fp := makeFingerprint(resp)
+			o.fpMu.Lock()
+			o.rejectionFingerprints[fp] = true
+			o.fpMu.Unlock()
+			hits++
+		}
+	}
+	if hits > 0 {
+		fmt.Printf("\033[0;33m[CALIBRATE]\033[0m Perimeter rejects egregious payloads (%d/%d probes) — block-page fingerprint locked in\n", hits, len(probes))
+	}
+}
+
+// isRejectionResponse returns true when a probe response is server/WAF
+// rejection rather than application output. Combines status-based detection,
+// body signature detection, and fingerprint clustering.
+func (o *Orchestrator) isRejectionResponse(resp *ResponseContext) bool {
+	if isServerRejection(o.baseline.StatusCode, resp.StatusCode) {
+		return true
+	}
+	if looksLikeWAFBlockPage(resp) {
+		return true
+	}
+	fp := makeFingerprint(resp)
+	o.fpMu.Lock()
+	confirmed := o.rejectionFingerprints[fp]
+	o.fpMu.Unlock()
+	return confirmed
 }
 
 // generateCurlCommand builds a reproducible curl command for a finding (Rule #9)
@@ -1319,9 +1572,16 @@ func (o *Orchestrator) verifyFindingStrict(finding *Finding, mutation Mutation) 
 			continue
 		}
 
+		// During verification, a WAF block returns the same shape every time.
+		// If we let it through, "3/3 successes" would falsely confirm the FP.
+		if o.isRejectionResponse(resp) {
+			o.recordFingerprint(mutation, resp)
+			continue
+		}
+
 		diff := CalculateDiffWithProfile(o.baseline, resp, o.profile)
 
-		reflected, reflectLocation := CheckHeaderReflection(mutation, resp, string(o.baseline.Body))
+		reflected, reflectLocation := CheckHeaderReflection(mutation, resp, o.baseline)
 		if reflected {
 			diff.HeaderReflection = true
 			diff.ReflectedValue = reflectLocation
