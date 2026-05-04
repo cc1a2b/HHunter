@@ -8,13 +8,13 @@
 [![GitHub stars](https://img.shields.io/github/stars/cc1a2b/HHunter?style=flat&color=yellow)](https://github.com/cc1a2b/HHunter/stargazers)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)](https://github.com/cc1a2b/HHunter/releases)
 
-**Advanced HTTP Header Vulnerability Scanner**
+**🛰️ Advanced HTTP Header Vulnerability Scanner**
 
 *1100+ mutations across 22 attack categories with OOB detection, adaptive scanning, and evidence-based reporting for security professionals*
 
 </div>
 
-## About
+## 📖 About
 
 **HHunter** is an advanced HTTP header security testing engine built for penetration testers and bug bounty hunters. It discovers real vulnerabilities through intelligent header mutation and differential response analysis — not just information gathering. With 1100+ attack mutations, out-of-band blind vulnerability detection, technology-adaptive scanning, and chained multi-header attacks, HHunter finds what other tools miss.
 
@@ -28,23 +28,23 @@
 
 ---
 
-## Table of Contents
+## 📑 Table of Contents
 
-- [About](#about)
-- [Features](#features)
-- [Installation](#installation)
-- [Quick Start](#quick-start)
-- [Usage Examples](#usage-examples)
-- [Command Reference](#command-reference)
-- [Advanced Usage](#advanced-usage)
-- [Detection Categories](#detection-categories)
-- [Contributing](#contributing)
-- [License](#license)
-- [Support](#support)
+- [About](#-about)
+- [Features](#-features)
+- [Installation](#-installation)
+- [Quick Start](#-quick-start)
+- [Usage Examples](#-usage-examples)
+- [Command Reference](#-command-reference)
+- [Advanced Usage](#-advanced-usage)
+- [Detection Categories](#-detection-categories)
+- [Contributing](#-contributing)
+- [License](#-license)
+- [Support](#-support)
 
 ---
 
-## Features
+## ✨ Features
 
 ### Core Capabilities
 - **Authentication Bypass**: JWT none/kid/jku attacks, token manipulation, role injection, cloud identity spoofing (198 mutations)
@@ -178,7 +178,7 @@ HHunter includes a built-in OOB callback server that confirms blind vulnerabilit
 
 ---
 
-## Installation
+## 📦 Installation
 
 ### Go Install (Recommended)
 ```bash
@@ -216,7 +216,7 @@ GOOS=darwin GOARCH=amd64 go build -o hhunter-darwin ./cmd/hhunter
 
 ---
 
-## Quick Start
+## 🚀 Quick Start
 
 ### Basic Testing
 ```bash
@@ -247,7 +247,7 @@ cat urls.txt | hhunter --auth --proxy --injection --diff-only
 
 ---
 
-## Usage Examples
+## 💡 Usage Examples
 
 ```bash
 # Authentication bypass testing
@@ -292,7 +292,7 @@ hhunter -u https://api.target.com/admin --auth -H "Authorization: Bearer eyJ..."
 
 ---
 
-## Command Reference
+## 📋 Command Reference
 
 Get the complete help anytime with `hhunter --help`
 
@@ -380,7 +380,7 @@ Output:
 
 ---
 
-## Advanced Usage
+## 🔧 Advanced Usage
 
 ### Professional Penetration Testing
 ```bash
@@ -431,7 +431,7 @@ hhunter -u https://api.company.com --full --sarif results.sarif -q
 
 ---
 
-## Detection Categories
+## 🎯 Detection Categories
 
 ### Authentication Bypass (173 mutations)
 - JWT none/None/NONE algorithm bypass, empty signature, weak secret signing
@@ -485,7 +485,7 @@ Method override, cloud/CDN, debug exposure, HTTP smuggling, hop-by-hop, rate lim
 
 ---
 
-## Contributing
+## 🤝 Contributing
 
 We welcome contributions! Here's how you can help:
 
@@ -528,7 +528,7 @@ HHunter/
 
 ---
 
-## License
+## 📄 License
 
 HHunter is released under the **MIT License**. See [LICENSE](LICENSE) for details.
 
@@ -539,7 +539,7 @@ Licensed under MIT License - free for commercial and personal use
 
 ---
 
-## Support
+## ☕ Support
 
 If HHunter helps with your security research or professional work:
 
@@ -547,7 +547,7 @@ If HHunter helps with your security research or professional work:
 
 [![Buy Me A Coffee](https://cdn.buymeacoffee.com/buttons/default-orange.png)](https://www.buymeacoffee.com/cc1a2b)
 
-**Star this repo** | **Follow [@cc1a2b](https://twitter.com/cc1a2b)** | **Share with others**
+**⭐ Star this repo** • **🐦 Follow [@cc1a2b](https://twitter.com/cc1a2b)** • **📢 Share with others**
 
 </div>
 
@@ -555,8 +555,8 @@ If HHunter helps with your security research or professional work:
 
 <div align="center">
 
-**HHunter — Advanced HTTP Header Vulnerability Scanner**
+**🛰️ HHunter — Advanced HTTP Header Vulnerability Scanner**
 
-*Built by [cc1a2b](https://github.com/cc1a2b) for the security community*
+*Built with ❤️ by [cc1a2b](https://github.com/cc1a2b) for the security community*
 
 </div>
